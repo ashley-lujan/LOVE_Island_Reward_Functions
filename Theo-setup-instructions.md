@@ -168,7 +168,7 @@ Navigate to the eureka directory and run:
 ```bash
 conda activate eureka
 cd ~/eureka_project/eureka
-python eureka.py env=cartpole sample=2 iteration=1 model=gpt-4-0314
+python eureka.py env=cartpole sample=2 iteration=1 model=gpt-5.4-mini
 ```
 
 **Key parameters:**
@@ -178,12 +178,12 @@ python eureka.py env=cartpole sample=2 iteration=1 model=gpt-4-0314
 | `env` | `shadow_hand` | Robot task to run (see `eureka/cfg/env/` for full list) |
 | `sample` | `3` | Reward candidates generated per iteration |
 | `iteration` | `1` | Number of Eureka LLM→RL loops |
-| `model` | `gpt-4-0314` | OpenAI model to use |
+| `model` | `gpt-5.4-mini` | OpenAI model to use |
 | `max_iterations` | `3000` | RL training steps per reward candidate |
 
 **Recommended for fast testing:**
 ```bash
-python eureka.py env=cartpole sample=2 iteration=1 max_iterations=500 model=gpt-4-0314
+python eureka.py env=cartpole sample=2 iteration=1 max_iterations=500 model=gpt-5.4-mini
 ```
 
 **Outputs** are saved to `eureka/outputs/eureka/<timestamp>/` — includes logs, all generated reward functions, and trained policies.

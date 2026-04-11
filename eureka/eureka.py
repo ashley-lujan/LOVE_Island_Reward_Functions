@@ -58,6 +58,31 @@ def main(cfg):
     initial_user = initial_user.format(task_obs_code_string=task_obs_code_string, task_description=task_description)
     messages = [{"role": "system", "content": initial_system}, {"role": "user", "content": initial_user}]
 
+    # Preserve the raw reward signature template text — the variable `reward_signature`
+    # is later reassigned inside the response loop, but the multi-agent agents need the
+    # original template every iteration.
+    reward_signature_text = reward_signature
+
+    # Multi-agent feedback pipeline setup (opt-in via cfg.feedback_mode == 'multi')
+    multi_prompts = None
+    trace_dir = None
+    multi_agent_summary = []
+    current_reward_code_for_next_iter = None
+    last_metrics_block = None
+    if cfg.feedback_mode == 'multi':
+        from utils.multi_agent import (
+            load_multi_agent_prompts,
+            run_multi_agent_iteration,
+            prompt_human_feedback,
+        )
+        multi_prompts = load_multi_agent_prompts(prompt_dir)
+        trace_dir = os.path.join(os.getcwd(), cfg.multi_agent_trace_dir)
+        os.makedirs(trace_dir, exist_ok=True)
+        logging.info(
+            f"feedback_mode=multi; multi_agent_model={cfg.multi_agent_model}; "
+            f"trace_dir={trace_dir}"
+        )
+
     task_code_string = task_code_string.replace(task, task+suffix)
     # Create Task YAML files
     create_task(ISAAC_ROOT_DIR, cfg.env.task, cfg.env.env_name, suffix)
@@ -83,33 +108,71 @@ def main(cfg):
 
         logging.info(f"Iteration {iter}: Generating {cfg.sample} samples with {cfg.model}")
 
-        while True:
-            if total_samples >= cfg.sample:
-                break
-            for attempt in range(1000):
-                try:
-                    response_cur = openai.ChatCompletion.create(
-                        model=model,
-                        messages=messages,
-                        temperature=cfg.temperature,
-                        n=chunk_size
-                    )
-                    total_samples += chunk_size
-                    break
-                except Exception as e:
-                    if attempt >= 10:
-                        chunk_size = max(int(chunk_size / 2), 1)
-                        print("Current Chunk Size", chunk_size)
-                    logging.info(f"Attempt {attempt+1} failed with error: {e}")
-                    time.sleep(1)
-            if response_cur is None:
-                logging.info("Code terminated due to too many failed attempts!")
-                exit()
+        use_multi_agent = (
+            cfg.feedback_mode == 'multi'
+            and iter >= 1
+            and current_reward_code_for_next_iter is not None
+            and last_metrics_block is not None
+        )
 
+        if use_multi_agent:
+            human_fb = (
+                prompt_human_feedback(iter, cfg)
+                if cfg.human_feedback_enabled
+                else "<no human feedback provided>"
+            )
+            logging.info(f"Iteration {iter}: Running multi-agent feedback pipeline")
+            response_cur, agent_summary = run_multi_agent_iteration(
+                cfg,
+                multi_prompts,
+                human_feedback=human_fb,
+                metrics_block=last_metrics_block,
+                current_reward_code=current_reward_code_for_next_iter,
+                task_obs_code_string=task_obs_code_string,
+                task_description=task_description,
+                reward_signature=reward_signature_text,
+                code_output_tip=code_output_tip,
+                iter_idx=iter,
+                trace_dir=trace_dir,
+                n_samples=cfg.sample,
+                fallback_messages=messages,
+                fallback_model=model,
+            )
+            multi_agent_summary.append(agent_summary)
+            with open('multi_agent_summary.json', 'w') as f:
+                json.dump(multi_agent_summary, f, indent=2, default=str)
             responses.extend(response_cur["choices"])
             prompt_tokens = response_cur["usage"]["prompt_tokens"]
             total_completion_token += response_cur["usage"]["completion_tokens"]
             total_token += response_cur["usage"]["total_tokens"]
+        else:
+            while True:
+                if total_samples >= cfg.sample:
+                    break
+                for attempt in range(1000):
+                    try:
+                        response_cur = openai.ChatCompletion.create(
+                            model=model,
+                            messages=messages,
+                            temperature=cfg.temperature,
+                            n=chunk_size
+                        )
+                        total_samples += chunk_size
+                        break
+                    except Exception as e:
+                        if attempt >= 10:
+                            chunk_size = max(int(chunk_size / 2), 1)
+                            print("Current Chunk Size", chunk_size)
+                        logging.info(f"Attempt {attempt+1} failed with error: {e}")
+                        time.sleep(1)
+                if response_cur is None:
+                    logging.info("Code terminated due to too many failed attempts!")
+                    exit()
+
+                responses.extend(response_cur["choices"])
+                prompt_tokens = response_cur["usage"]["prompt_tokens"]
+                total_completion_token += response_cur["usage"]["completion_tokens"]
+                total_token += response_cur["usage"]["total_tokens"]
 
         if cfg.sample == 1:
             logging.info(f"Iteration {iter}: GPT Output:\n " + responses[0]["message"]["content"] + "\n")
@@ -202,6 +265,7 @@ def main(cfg):
         # Gather RL training results and construct reward reflection
         code_feedbacks = []
         contents = []
+        metrics_blocks = []
         successes = []
         reward_correlations = []
         code_paths = []
@@ -213,16 +277,18 @@ def main(cfg):
             code_paths.append(f"env_iter{iter}_response{response_id}.py")
             try:
                 with open(rl_filepath, 'r') as f:
-                    stdout_str = f.read() 
-            except: 
+                    stdout_str = f.read()
+            except:
                 content = execution_error_feedback.format(traceback_msg="Code Run cannot be executed due to function signature error! Please re-write an entirely new reward function!")
                 content += code_output_tip
-                contents.append(content) 
+                contents.append(content)
+                metrics_blocks.append("")
                 successes.append(DUMMY_FAILURE)
                 reward_correlations.append(DUMMY_FAILURE)
                 continue
 
             content = ''
+            metrics_block_cur = ''
             traceback_msg = filter_traceback(stdout_str)
 
             if traceback_msg == '':
@@ -257,16 +323,20 @@ def main(cfg):
                         metric_cur_min = min(tensorboard_logs[metric])
                         if metric != "gt_reward" and metric != "gpt_reward":
                             if metric != "consecutive_successes":
-                                metric_name = metric 
+                                metric_name = metric
                             else:
                                 metric_name = "task_score"
-                            content += f"{metric_name}: {metric_cur}, Max: {metric_cur_max:.2f}, Mean: {metric_cur_mean:.2f}, Min: {metric_cur_min:.2f} \n"                    
+                            metric_line = f"{metric_name}: {metric_cur}, Max: {metric_cur_max:.2f}, Mean: {metric_cur_mean:.2f}, Min: {metric_cur_min:.2f} \n"
+                            content += metric_line
+                            metrics_block_cur += metric_line
                         else:
                             # Provide ground-truth score when success rate not applicable
                             if "consecutive_successes" not in tensorboard_logs:
-                                content += f"ground-truth score: {metric_cur}, Max: {metric_cur_max:.2f}, Mean: {metric_cur_mean:.2f}, Min: {metric_cur_min:.2f} \n"                    
+                                metric_line = f"ground-truth score: {metric_cur}, Max: {metric_cur_max:.2f}, Mean: {metric_cur_mean:.2f}, Min: {metric_cur_min:.2f} \n"
+                                content += metric_line
+                                metrics_block_cur += metric_line
                 code_feedbacks.append(code_feedback)
-                content += code_feedback  
+                content += code_feedback
             else:
                 # Otherwise, provide execution traceback error feedback
                 successes.append(DUMMY_FAILURE)
@@ -274,7 +344,8 @@ def main(cfg):
                 content += execution_error_feedback.format(traceback_msg=traceback_msg)
 
             content += code_output_tip
-            contents.append(content) 
+            contents.append(content)
+            metrics_blocks.append(metrics_block_cur)
         
         # Repeat the iteration if all code generation failed
         if not exec_success and cfg.sample != 1:
@@ -303,6 +374,12 @@ def main(cfg):
         max_successes.append(max_success)
         max_successes_reward_correlation.append(max_success_reward_correlation)
         best_code_paths.append(code_paths[best_sample_idx])
+
+        # Track best sample code + metrics for next iter's multi-agent pipeline
+        if best_sample_idx < len(code_runs):
+            current_reward_code_for_next_iter = code_runs[best_sample_idx]
+        if best_sample_idx < len(metrics_blocks):
+            last_metrics_block = metrics_blocks[best_sample_idx]
 
         logging.info(f"Iteration {iter}: Max Success: {max_success}, Execute Rate: {execute_rate}, Max Success Reward Correlation: {max_success_reward_correlation}")
         logging.info(f"Iteration {iter}: Best Generation ID: {best_sample_idx}")
