@@ -14,7 +14,7 @@ ENVIRONMENT OBSERVATION CODE (the allowed self.* attributes — the Code Agent's
 {task_obs_code_string}
 ```
 
-REWARD FUNCTION SIGNATURE TEMPLATE (the Code Agent must conform to this shape):
+REWARD FUNCTION SIGNATURE TEMPLATE (SHAPE/TYPE CONTRACT ONLY — the names `object_pos`/`goal_pos` below are GENERIC PLACEHOLDERS and MUST NOT be passed through to the Code Agent. Translate them into real parameter names derived from the `self.*` attributes the new reward will consume, e.g., `dof_pos`, `dof_vel`):
 {task_reward_signature_string}
 
 TASK DESCRIPTION (verbatim from the environment config):

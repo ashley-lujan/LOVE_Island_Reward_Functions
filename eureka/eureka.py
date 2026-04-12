@@ -1,23 +1,51 @@
 import hydra
-import numpy as np 
+import numpy as np
 import json
-import logging 
+import logging
 import matplotlib.pyplot as plt
 import os
 import openai
 import re
 import subprocess
+import sys
 from pathlib import Path
 import shutil
-import time 
+import time
 
-from utils.misc import * 
+from utils.misc import *
 from utils.file_utils import find_files_with_substring, load_tensorboard_logs
 from utils.create_task import create_task
 from utils.extract_task_code import *
 
 EUREKA_ROOT_DIR = os.getcwd()
 ISAAC_ROOT_DIR = f"{EUREKA_ROOT_DIR}/../isaacgymenvs/isaacgymenvs"
+
+
+def _build_subprocess_env():
+    """Return a copy of os.environ with LD_LIBRARY_PATH patched so IsaacGym
+    can find libpython3.8.so + libcuda.so from inside subprocess.Popen.
+
+    The parent bashrc's `export LD_LIBRARY_PATH=...$CONDA_PREFIX/lib...` is
+    fragile — if it runs before conda's activation hook populates
+    CONDA_PREFIX, `$CONDA_PREFIX` expands to empty and libpython is never
+    exposed to the child process, crashing `import isaacgym` with
+    `ImportError: libpython3.8.so.1.0: cannot open shared object file`.
+    We resolve the real conda prefix via `sys.prefix` (always correct inside
+    an active env) and prepend it ourselves so eureka.py is robust regardless
+    of parent shell state.
+    """
+    sub_env = os.environ.copy()
+    conda_prefix = sys.prefix  # /home/<user>/miniconda3/envs/eureka inside the active env
+    extra_paths = [f"{conda_prefix}/lib", "/usr/lib/wsl/lib"]
+    existing = sub_env.get("LD_LIBRARY_PATH", "")
+    if existing:
+        sub_env["LD_LIBRARY_PATH"] = ":".join(extra_paths + [existing])
+    else:
+        sub_env["LD_LIBRARY_PATH"] = ":".join(extra_paths)
+    return sub_env
+
+
+_SUBPROCESS_ENV = _build_subprocess_env()
 
 @hydra.main(config_path="cfg", config_name="config", version_base="1.1")
 def main(cfg):
@@ -252,13 +280,13 @@ def main(cfg):
             # Execute the python file with flags
             rl_filepath = f"env_iter{iter}_response{response_id}.txt"
             with open(rl_filepath, 'w') as f:
-                process = subprocess.Popen(['python', '-u', f'{ISAAC_ROOT_DIR}/train.py',  
+                process = subprocess.Popen(['python', '-u', f'{ISAAC_ROOT_DIR}/train.py',
                                             'hydra/output=subprocess',
                                             f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
                                             f'wandb_entity={cfg.wandb_username}', f'wandb_project={cfg.wandb_project}',
                                             f'headless={not cfg.capture_video}', f'capture_video={cfg.capture_video}', 'force_render=False',
                                             f'max_iterations={cfg.max_iterations}'],
-                                            stdout=f, stderr=f)
+                                            stdout=f, stderr=f, env=_SUBPROCESS_ENV)
             block_until_training(rl_filepath, log_status=True, iter_num=iter, response_id=response_id)
             rl_runs.append(process)
         
@@ -432,13 +460,13 @@ def main(cfg):
         # Execute the python file with flags
         rl_filepath = f"reward_code_eval{i}.txt"
         with open(rl_filepath, 'w') as f:
-            process = subprocess.Popen(['python', '-u', f'{ISAAC_ROOT_DIR}/train.py',  
+            process = subprocess.Popen(['python', '-u', f'{ISAAC_ROOT_DIR}/train.py',
                                         'hydra/output=subprocess',
                                         f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
                                         f'wandb_entity={cfg.wandb_username}', f'wandb_project={cfg.wandb_project}',
                                         f'headless={not cfg.capture_video}', f'capture_video={cfg.capture_video}', 'force_render=False', f'seed={i}',
                                         ],
-                                        stdout=f, stderr=f)
+                                        stdout=f, stderr=f, env=_SUBPROCESS_ENV)
 
         block_until_training(rl_filepath)
         eval_runs.append(process)

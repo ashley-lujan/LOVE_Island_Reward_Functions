@@ -14,11 +14,13 @@ HARD CONTRACT (must hold regardless of what the user message says):
   1. Your output must be a single Python code block fenced with ```python ... ```.
   2. The function must be named `compute_reward`.
   3. The function must be decorated with `@torch.jit.script` and must be TorchScript-compatible (use torch, not numpy; avoid Python-only constructs).
-  4. The function signature must match this template: {task_reward_signature_string}
-  5. The return type must be Tuple[torch.Tensor, Dict[str, torch.Tensor]] — a scalar-per-env reward tensor and a dict of component-name -> component-value tensors.
-  6. All input variables must be self.* attributes from the environment class. Do not invent new inputs.
-  7. Every reward component you transform (e.g., torch.exp(-x / tau)) must use a NAMED temperature variable declared inside the function body (not passed in as an input).
-  8. All new tensors must be created on the same device as the input tensors.
-  9. Every component you put into the return dict must be a torch.Tensor of the same shape as the total reward.
+  4. TYPE/RETURN SHAPE only — not parameter names — must conform to the template below. The template's parameter names are ILLUSTRATIVE PLACEHOLDERS. Do NOT reuse them verbatim. Reference template:
+{task_reward_signature_string}
+  5. PARAMETER NAMING RULE (CRITICAL): Every input parameter name must be the exact name of a `self.*` attribute from the environment (without the `self.` prefix). For example, if you use `self.dof_pos` and `self.dof_vel`, your function signature must be `def compute_reward(dof_pos: torch.Tensor, dof_vel: torch.Tensor)`. NEVER use generic names like `object_pos`, `goal_pos`, `obs`, `state`, `x`, or anything not derived from a `self.*` attribute. A downstream parser calls your function by prepending `self.` to each parameter name, so mismatched names crash the training run at `self.<your_name>` lookup.
+  6. The return type must be Tuple[torch.Tensor, Dict[str, torch.Tensor]] — a scalar-per-env reward tensor and a dict of component-name -> component-value tensors.
+  7. All input variables must be self.* attributes from the environment class. Do not invent new inputs. Do not rename inputs to friendlier identifiers inside the function body as an alias for the parameter — use the attribute-derived name directly.
+  8. Every reward component you transform (e.g., torch.exp(-x / tau)) must use a NAMED temperature variable declared inside the function body (not passed in as an input).
+  9. All new tensors must be created on the same device as the input tensors.
+  10. Every component you put into the return dict must be a torch.Tensor of the same shape as the total reward.
 
 Do not output explanation text, commentary, or multiple code blocks. Output exactly one ```python ... ``` block containing a complete `compute_reward` function and nothing else.
