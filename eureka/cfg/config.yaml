@@ -33,7 +33,8 @@ multi_agent_model: gpt-5.4-mini    # used by all 3 agents when feedback_mode=mul
 interpreter_temperature: 0.2
 architect_temperature: 0.3
 code_agent_temperature: 0.7
-human_feedback_enabled: true       # if true, prompt via stdin between iterations; if false, runs with "<no human feedback provided>"
-human_feedback_timeout: 0          # 0 = blocks until user hits enter on a blank line
+human_feedback_enabled: true       # if true, prompt between iterations; if false, runs with "<no human feedback provided>"
+human_feedback_timeout: 0          # minutes to wait for file-based feedback; 0 = block indefinitely (local stdin mode only)
+feedback_scratch_path: ""          # set to a shared scratch path (e.g. /scratch/general/vast/<user>/love_island) for file-based SLURM feedback
 multi_agent_trace_dir: multi_agent_trace
 multi_agent_strict_json: true      # if interpreter JSON fails after 1 repair retry, fall back to single-call for that iter

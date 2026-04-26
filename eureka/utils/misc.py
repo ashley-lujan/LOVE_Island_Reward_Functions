@@ -2,10 +2,14 @@ import subprocess
 import os
 import json
 import logging
+import time
 
 from utils.extract_task_code import file_to_string
 
 def set_freest_gpu():
+    if os.getenv("SLURM_JOB_ID"):
+        logging.info("Running under SLURM — skipping set_freest_gpu() (CUDA_VISIBLE_DEVICES already set by scheduler)")
+        return
     freest_gpu = get_freest_gpu()
     os.environ['CUDA_VISIBLE_DEVICES'] = str(freest_gpu)
 
@@ -40,6 +44,7 @@ def block_until_training(rl_filepath, log_status=False, iter_num=-1, response_id
             if log_status and "Traceback" in rl_log:
                 logging.info(f"Iteration {iter_num}: Code Run {response_id} execution error!")
             break
+        time.sleep(5)
 
 if __name__ == "__main__":
     print(get_freest_gpu())

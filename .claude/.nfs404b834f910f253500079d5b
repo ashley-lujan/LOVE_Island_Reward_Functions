@@ -13,9 +13,7 @@
       "Bash(python -m py_compile eureka.py)",
       "Bash(python -m py_compile utils/multi_agent.py)",
       "Bash(python -m py_compile utils/compare_runs.py)",
-      "Bash(py -3 -c \"import ast, sys; [ast.parse\\(open\\(p, encoding='utf-8'\\).read\\(\\)\\) for p in ['c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/eureka.py', 'c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/utils/multi_agent.py', 'c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/utils/compare_runs.py']]; print\\('ALL_OK'\\)\")",
-      "Bash(chmod +x *)",
-      "Bash(python *)"
+      "Bash(py -3 -c \"import ast, sys; [ast.parse\\(open\\(p, encoding='utf-8'\\).read\\(\\)\\) for p in ['c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/eureka.py', 'c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/utils/multi_agent.py', 'c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/utils/compare_runs.py']]; print\\('ALL_OK'\\)\")"
     ]
   }
 }

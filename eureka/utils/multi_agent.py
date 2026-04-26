@@ -42,12 +42,27 @@ def load_multi_agent_prompts(prompt_dir: str) -> Dict[str, str]:
     return prompts
 
 
-def prompt_human_feedback(iter_idx: int, cfg) -> str:
-    """Block on stdin for multi-line human feedback between iterations.
+def prompt_human_feedback(iter_idx: int, cfg, context: Optional[Dict[str, Any]] = None) -> str:
+    """Collect human feedback between iterations.
 
-    Returns the literal sentinel "<no human feedback provided>" if the user
-    immediately hits enter on a blank line.
+    When running under SLURM or when feedback_scratch_path is configured, uses
+    file-based polling so the job doesn't need an interactive TTY. Otherwise falls
+    back to the original blocking stdin path (local interactive runs).
     """
+    is_slurm = bool(os.getenv("SLURM_JOB_ID"))
+    scratch = getattr(cfg, "feedback_scratch_path", "") or ""
+    use_file_based = is_slurm or bool(scratch)
+
+    if use_file_based:
+        if not scratch:
+            # No scratch path configured — default to a subfolder of the current Hydra output dir
+            scratch = os.path.join(os.getcwd(), "feedback")
+        from utils.feedback_io import write_feedback_request, poll_for_feedback
+        write_feedback_request(iter_idx, scratch, context or {})
+        timeout = float(getattr(cfg, "human_feedback_timeout", 0))
+        return poll_for_feedback(iter_idx, scratch, timeout)
+
+    # Original interactive stdin path (local runs without scratch configured)
     print("")
     print(f"=============== Human feedback for iteration {iter_idx} ===============")
     print("Enter natural-language feedback about the previous reward. Finish with a")

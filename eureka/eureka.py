@@ -33,7 +33,7 @@ def _build_subprocess_env():
     """Patch LD_LIBRARY_PATH so IsaacGym subprocesses can import their deps."""
     sub_env = os.environ.copy()
     conda_prefix = sys.prefix
-    extra_paths = [f"{conda_prefix}/lib", "/usr/lib/wsl/lib"]
+    extra_paths = [f"{conda_prefix}/lib"]
     existing = sub_env.get("LD_LIBRARY_PATH", "")
     if existing:
         sub_env["LD_LIBRARY_PATH"] = ":".join(extra_paths + [existing])
@@ -152,7 +152,11 @@ def main(cfg):
 
             if use_multi_agent:
                 human_fb = (
-                    prompt_human_feedback(iter, cfg)
+                    prompt_human_feedback(iter, cfg, context={
+                        "island_id": island_id,
+                        "best_code_path": best_code_paths[island_id][-1] if best_code_paths[island_id] else None,
+                        "metrics": last_metrics_block[island_id],
+                    })
                     if cfg.human_feedback_enabled
                     else "<no human feedback provided>"
                 )
