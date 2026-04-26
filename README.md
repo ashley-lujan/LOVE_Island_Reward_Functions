@@ -63,7 +63,7 @@ python eureka.py env={environment} iteration={num_iterations} sample={num_sample
 
 Below are some example commands to try out Eureka:
 ```
-python eureka.py env=shadow_hand sample=4 iteration=2 model=gpt-4-0314
+python eureka.py env=shadow_hand sample=4 iteration=2 model=gpt-5.4-mini
 ```
 ```
 python eureka.py env=humanoid sample=16 iteration=5 model=gpt-3.5-turbo-16k-0613

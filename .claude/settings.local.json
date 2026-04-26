@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"c:\\\\Users\\\\ttkre\\\\OneDrive\\\\Desktop\\\\Programming\\\\EurekaFriends\\\\LOVE_Island_Reward_Functions\" log --oneline -5)",
+      "Bash(wc -l c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/utils/prompts/*.txt)",
+      "Bash(wc -l /c/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/envs/bidex/shadow_hand_catch_underarm*.py)",
+      "Bash(ls /c/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/envs/isaac/*.py)",
+      "Bash(xargs -I {} basename {})",
+      "Bash(ls /c/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/envs/bidex/*.py)",
+      "Bash(ls -1 /c/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/envs/isaac/*.py)",
+      "Bash(ls -1 /c/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/envs/bidex/*.py)",
+      "Bash(wc -l /c/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/envs/isaac/ant*.py)",
+      "Bash(python -m py_compile eureka.py)",
+      "Bash(python -m py_compile utils/multi_agent.py)",
+      "Bash(python -m py_compile utils/compare_runs.py)",
+      "Bash(py -3 -c \"import ast, sys; [ast.parse\\(open\\(p, encoding='utf-8'\\).read\\(\\)\\) for p in ['c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/eureka.py', 'c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/utils/multi_agent.py', 'c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/utils/compare_runs.py']]; print\\('ALL_OK'\\)\")"
+    ]
+  }
+}

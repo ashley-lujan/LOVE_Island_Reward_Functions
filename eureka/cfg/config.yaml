@@ -9,7 +9,7 @@ hydra:
     chdir: True
 
 # LLM parameters
-model: gpt-4-0314  # LLM model (other options are gpt-4, gpt-4-0613, gpt-3.5-turbo-16k-0613)
+model: gpt-5.4-mini  # LLM model (other options are gpt-4, gpt-4-0613, gpt-3.5-turbo-16k-0613)
 temperature: 1.0
 suffix: GPT  # suffix for generated files (indicates LLM model)
 
@@ -25,3 +25,14 @@ capture_video: False # whether to capture policy rollout videos
 use_wandb: False # whether to use wandb for logging
 wandb_username: "" # wandb username if logging with wandb
 wandb_project: "" # wandb project if logging with wandb
+
+# Multi-agent feedback pipeline
+feedback_mode: single              # single | multi
+multi_agent_model: gpt-5.4-mini    # used by all 3 agents when feedback_mode=multi
+interpreter_temperature: 0.2
+architect_temperature: 0.3
+code_agent_temperature: 0.7
+human_feedback_enabled: true       # if true, prompt via stdin between iterations; if false, runs with "<no human feedback provided>"
+human_feedback_timeout: 0          # 0 = blocks until user hits enter on a blank line
+multi_agent_trace_dir: multi_agent_trace
+multi_agent_strict_json: true      # if interpreter JSON fails after 1 repair retry, fall back to single-call for that iter

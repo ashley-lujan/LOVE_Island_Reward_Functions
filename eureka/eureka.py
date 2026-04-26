@@ -1,17 +1,18 @@
 import hydra
-import numpy as np 
+import numpy as np
 import json
-import logging 
+import logging
 import matplotlib.pyplot as plt
 import os
 import openai
 import re
 import subprocess
+import sys
 from pathlib import Path
 import shutil
-import time 
+import time
 
-from utils.misc import * 
+from utils.misc import *
 from utils.file_utils import find_files_with_substring, load_tensorboard_logs
 from utils.create_task import create_task
 from utils.extract_task_code import *
@@ -25,6 +26,23 @@ def build_initial_messages(initial_system, initial_user):
         {"role": "system", "content": initial_system},
         {"role": "user", "content": initial_user},
     ]
+
+
+def _build_subprocess_env():
+    """Patch LD_LIBRARY_PATH so IsaacGym subprocesses can import their deps."""
+    sub_env = os.environ.copy()
+    conda_prefix = sys.prefix
+    extra_paths = [f"{conda_prefix}/lib", "/usr/lib/wsl/lib"]
+    existing = sub_env.get("LD_LIBRARY_PATH", "")
+    if existing:
+        sub_env["LD_LIBRARY_PATH"] = ":".join(extra_paths + [existing])
+    else:
+        sub_env["LD_LIBRARY_PATH"] = ":".join(extra_paths)
+    return sub_env
+
+
+_SUBPROCESS_ENV = _build_subprocess_env()
+
 
 @hydra.main(config_path="cfg", config_name="config", version_base="1.1")
 def main(cfg):
@@ -46,9 +64,9 @@ def main(cfg):
     env_parent = 'isaac' if f'{env_name}.py' in os.listdir(f'{EUREKA_ROOT_DIR}/envs/isaac') else 'dexterity'
     task_file = f'{EUREKA_ROOT_DIR}/envs/{env_parent}/{env_name}.py'
     task_obs_file = f'{EUREKA_ROOT_DIR}/envs/{env_parent}/{env_name}_obs.py'
-    shutil.copy(task_obs_file, f"env_init_obs.py")
-    task_code_string  = file_to_string(task_file)
-    task_obs_code_string  = file_to_string(task_obs_file)
+    shutil.copy(task_obs_file, "env_init_obs.py")
+    task_code_string = file_to_string(task_file)
+    task_obs_code_string = file_to_string(task_obs_file)
     output_file = f"{ISAAC_ROOT_DIR}/tasks/{env_name}{suffix.lower()}.py"
 
     # Loading all text prompts
@@ -66,20 +84,42 @@ def main(cfg):
     num_islands = int(getattr(cfg, "num_islands", 1))
     island_messages = [build_initial_messages(initial_system, initial_user) for _ in range(num_islands)]
 
-    task_code_string = task_code_string.replace(task, task+suffix)
-    # Create Task YAML files
+    # Keep the raw template text available for the optional multi-agent path.
+    reward_signature_text = reward_signature
+
+    multi_prompts = None
+    trace_dir = None
+    multi_agent_summary = []
+    current_reward_code_for_next_iter = [None for _ in range(num_islands)]
+    last_metrics_block = [None for _ in range(num_islands)]
+    if cfg.feedback_mode == 'multi':
+        from utils.multi_agent import (
+            load_multi_agent_prompts,
+            run_multi_agent_iteration,
+            prompt_human_feedback,
+        )
+
+        multi_prompts = load_multi_agent_prompts(prompt_dir)
+        trace_dir = os.path.join(os.getcwd(), cfg.multi_agent_trace_dir)
+        os.makedirs(trace_dir, exist_ok=True)
+        logging.info(
+            f"feedback_mode=multi; multi_agent_model={cfg.multi_agent_model}; "
+            f"trace_dir={trace_dir}"
+        )
+
+    task_code_string = task_code_string.replace(task, task + suffix)
     create_task(ISAAC_ROOT_DIR, cfg.env.task, cfg.env.env_name, suffix)
 
-    DUMMY_FAILURE = -10000.
+    DUMMY_FAILURE = -10000.0
     max_successes = [[] for _ in range(num_islands)]
     max_successes_reward_correlation = [[] for _ in range(num_islands)]
     execute_rates = [[] for _ in range(num_islands)]
     best_code_paths = [[] for _ in range(num_islands)]
     max_success_overall = DUMMY_FAILURE
     max_success_reward_correlation_overall = DUMMY_FAILURE
-    max_reward_code_path = None 
+    max_reward_code_path = None
     max_reward_code_island = None
-    
+
     # Eureka generation loop
     for iter in range(cfg.iteration):
         for island_id in range(num_islands):
@@ -93,34 +133,79 @@ def main(cfg):
 
             logging.info(f"Iteration {iter}, Island {island_id}: Generating {cfg.sample} samples with {cfg.model}")
 
-            while True:
-                if total_samples >= cfg.sample:
-                    break
-                n_samples = min(chunk_size, cfg.sample - total_samples)
-                for attempt in range(1000):
-                    try:
-                        response_cur = openai.ChatCompletion.create(
-                            model=model,
-                            messages=island_messages[island_id],
-                            temperature=cfg.temperature,
-                            n=n_samples
-                        )
-                        total_samples += n_samples
-                        break
-                    except Exception as e:
-                        if attempt >= 10:
-                            chunk_size = max(int(chunk_size / 2), 1)
-                            print("Current Chunk Size", chunk_size)
-                        logging.info(f"Iteration {iter}, Island {island_id}: Attempt {attempt+1} failed with error: {e}")
-                        time.sleep(1)
-                if response_cur is None:
-                    logging.info("Code terminated due to too many failed attempts!")
-                    exit()
+            use_multi_agent = (
+                cfg.feedback_mode == 'multi'
+                and iter >= 1
+                and current_reward_code_for_next_iter[island_id] is not None
+                and last_metrics_block[island_id] is not None
+            )
 
+            if use_multi_agent:
+                human_fb = (
+                    prompt_human_feedback(iter, cfg)
+                    if cfg.human_feedback_enabled
+                    else "<no human feedback provided>"
+                )
+                logging.info(f"Iteration {iter}, Island {island_id}: Running multi-agent feedback pipeline")
+                island_trace_dir = os.path.join(trace_dir, f"island_{island_id}")
+                response_cur, agent_summary = run_multi_agent_iteration(
+                    cfg,
+                    multi_prompts,
+                    human_feedback=human_fb,
+                    metrics_block=last_metrics_block[island_id],
+                    current_reward_code=current_reward_code_for_next_iter[island_id],
+                    task_obs_code_string=task_obs_code_string,
+                    task_description=task_description,
+                    reward_signature=reward_signature_text,
+                    code_output_tip=code_output_tip,
+                    iter_idx=iter,
+                    trace_dir=island_trace_dir,
+                    n_samples=cfg.sample,
+                    fallback_messages=island_messages[island_id],
+                    fallback_model=model,
+                )
+                multi_agent_summary.append(
+                    {
+                        "iter": iter,
+                        "island_id": island_id,
+                        **agent_summary,
+                    }
+                )
+                with open("multi_agent_summary.json", "w") as f:
+                    json.dump(multi_agent_summary, f, indent=2, default=str)
                 responses.extend(response_cur["choices"])
                 prompt_tokens = response_cur["usage"]["prompt_tokens"]
                 total_completion_token += response_cur["usage"]["completion_tokens"]
                 total_token += response_cur["usage"]["total_tokens"]
+            else:
+                while True:
+                    if total_samples >= cfg.sample:
+                        break
+                    n_samples = min(chunk_size, cfg.sample - total_samples)
+                    for attempt in range(1000):
+                        try:
+                            response_cur = openai.ChatCompletion.create(
+                                model=model,
+                                messages=island_messages[island_id],
+                                temperature=cfg.temperature,
+                                n=n_samples,
+                            )
+                            total_samples += n_samples
+                            break
+                        except Exception as e:
+                            if attempt >= 10:
+                                chunk_size = max(int(chunk_size / 2), 1)
+                                print("Current Chunk Size", chunk_size)
+                            logging.info(f"Iteration {iter}, Island {island_id}: Attempt {attempt+1} failed with error: {e}")
+                            time.sleep(1)
+                    if response_cur is None:
+                        logging.info("Code terminated due to too many failed attempts!")
+                        exit()
+
+                    responses.extend(response_cur["choices"])
+                    prompt_tokens = response_cur["usage"]["prompt_tokens"]
+                    total_completion_token += response_cur["usage"]["completion_tokens"]
+                    total_token += response_cur["usage"]["total_tokens"]
 
             if cfg.sample == 1:
                 logging.info(f"Iteration {iter}, Island {island_id}: GPT Output:\n " + responses[0]["message"]["content"] + "\n")
@@ -179,44 +264,60 @@ def main(cfg):
                 if "@torch.jit.script" not in code_string:
                     code_string = "@torch.jit.script\n" + code_string
 
-                with open(output_file, 'w') as file:
-                    file.writelines(task_code_string_iter + '\n')
-                    file.writelines("from typing import Tuple, Dict" + '\n')
-                    file.writelines("import math" + '\n')
-                    file.writelines("import torch" + '\n')
-                    file.writelines("from torch import Tensor" + '\n')
-                    file.writelines(code_string + '\n')
+                with open(output_file, "w") as file:
+                    file.writelines(task_code_string_iter + "\n")
+                    file.writelines("from typing import Tuple, Dict\n")
+                    file.writelines("import math\n")
+                    file.writelines("import torch\n")
+                    file.writelines("from torch import Tensor\n")
+                    file.writelines(code_string + "\n")
 
                 reward_only_path = f"env_iter{iter}_response{response_id}_island{island_id}_rewardonly.py"
                 env_code_path = f"env_iter{iter}_response{response_id}_island{island_id}.py"
                 rl_filepath = f"env_iter{iter}_response{response_id}_island{island_id}.txt"
 
-                with open(reward_only_path, 'w') as file:
-                    file.writelines(code_string + '\n')
+                with open(reward_only_path, "w") as file:
+                    file.writelines(code_string + "\n")
 
                 shutil.copy(output_file, env_code_path)
 
                 set_freest_gpu()
-                with open(rl_filepath, 'w') as f:
-                    process = subprocess.Popen(['python', '-u', f'{ISAAC_ROOT_DIR}/train.py',
-                                                'hydra/output=subprocess',
-                                                f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
-                                                f'wandb_entity={cfg.wandb_username}', f'wandb_project={cfg.wandb_project}',
-                                                f'headless={not cfg.capture_video}', f'capture_video={cfg.capture_video}', 'force_render=False',
-                                                f'max_iterations={cfg.max_iterations}'],
-                                                stdout=f, stderr=f)
+                with open(rl_filepath, "w") as f:
+                    process = subprocess.Popen(
+                        [
+                            "python",
+                            "-u",
+                            f"{ISAAC_ROOT_DIR}/train.py",
+                            "hydra/output=subprocess",
+                            f"task={task}{suffix}",
+                            f"wandb_activate={cfg.use_wandb}",
+                            f"wandb_entity={cfg.wandb_username}",
+                            f"wandb_project={cfg.wandb_project}",
+                            f"headless={not cfg.capture_video}",
+                            f"capture_video={cfg.capture_video}",
+                            "force_render=False",
+                            f"max_iterations={cfg.max_iterations}",
+                        ],
+                        stdout=f,
+                        stderr=f,
+                        env=_SUBPROCESS_ENV,
+                    )
                 block_until_training(rl_filepath, log_status=False)
-                run_records.append({
-                    "response_id": response_id,
-                    "process": process,
-                    "rl_filepath": rl_filepath,
-                    "code_path": env_code_path,
-                    "reward_only_path": reward_only_path,
-                })
+                run_records.append(
+                    {
+                        "response_id": response_id,
+                        "process": process,
+                        "rl_filepath": rl_filepath,
+                        "code_path": env_code_path,
+                        "reward_only_path": reward_only_path,
+                        "code_string": code_string,
+                    }
+                )
 
             contents = []
             successes = []
             reward_correlations = []
+            metrics_blocks = []
             valid_response_ids = []
             code_paths = []
 
@@ -227,29 +328,31 @@ def main(cfg):
                 code_paths.append(run_record["code_path"])
                 valid_response_ids.append(response_id)
                 try:
-                    with open(run_record["rl_filepath"], 'r') as f:
+                    with open(run_record["rl_filepath"], "r") as f:
                         stdout_str = f.read()
                 except Exception:
                     content = execution_error_feedback.format(traceback_msg="Code Run cannot be executed due to function signature error! Please re-write an entirely new reward function!")
                     content += code_output_tip
                     contents.append(content)
+                    metrics_blocks.append("")
                     successes.append(DUMMY_FAILURE)
                     reward_correlations.append(DUMMY_FAILURE)
                     continue
 
-                content = ''
+                content = ""
+                metrics_block_cur = ""
                 traceback_msg = filter_traceback(stdout_str)
 
-                if traceback_msg == '':
+                if traceback_msg == "":
                     exec_success = True
-                    lines = stdout_str.split('\n')
+                    lines = stdout_str.split("\n")
                     tensorboard_logdir = ""
                     for line in lines:
-                        if line.startswith('Tensorboard Directory:'):
-                            tensorboard_logdir = line.split(':')[-1].strip()
+                        if line.startswith("Tensorboard Directory:"):
+                            tensorboard_logdir = line.split(":")[-1].strip()
                             break
                     tensorboard_logs = load_tensorboard_logs(tensorboard_logdir)
-                    max_iterations = np.array(tensorboard_logs['gt_reward']).shape[0]
+                    max_iterations = np.array(tensorboard_logs["gt_reward"]).shape[0]
                     epoch_freq = max(int(max_iterations // 10), 1)
 
                     content += policy_feedback.format(epoch_freq=epoch_freq)
@@ -264,21 +367,28 @@ def main(cfg):
                     success_score = DUMMY_FAILURE
                     for metric in tensorboard_logs:
                         if "/" not in metric:
-                            metric_cur = ['{:.2f}'.format(x) for x in tensorboard_logs[metric][::epoch_freq]]
+                            metric_cur = ["{:.2f}".format(x) for x in tensorboard_logs[metric][::epoch_freq]]
                             metric_cur_max = max(tensorboard_logs[metric])
                             metric_cur_mean = sum(tensorboard_logs[metric]) / len(tensorboard_logs[metric])
-                            if "consecutive_successes" == metric:
+                            if metric == "consecutive_successes":
                                 success_score = metric_cur_max
                             metric_cur_min = min(tensorboard_logs[metric])
                             if metric != "gt_reward" and metric != "gpt_reward":
-                                if metric != "consecutive_successes":
-                                    metric_name = metric
-                                else:
-                                    metric_name = "task_score"
-                                content += f"{metric_name}: {metric_cur}, Max: {metric_cur_max:.2f}, Mean: {metric_cur_mean:.2f}, Min: {metric_cur_min:.2f} \n"
+                                metric_name = metric if metric != "consecutive_successes" else "task_score"
+                                metric_line = (
+                                    f"{metric_name}: {metric_cur}, Max: {metric_cur_max:.2f}, "
+                                    f"Mean: {metric_cur_mean:.2f}, Min: {metric_cur_min:.2f} \n"
+                                )
+                                content += metric_line
+                                metrics_block_cur += metric_line
                             else:
                                 if "consecutive_successes" not in tensorboard_logs:
-                                    content += f"ground-truth score: {metric_cur}, Max: {metric_cur_max:.2f}, Mean: {metric_cur_mean:.2f}, Min: {metric_cur_min:.2f} \n"
+                                    metric_line = (
+                                        f"ground-truth score: {metric_cur}, Max: {metric_cur_max:.2f}, "
+                                        f"Mean: {metric_cur_mean:.2f}, Min: {metric_cur_min:.2f} \n"
+                                    )
+                                    content += metric_line
+                                    metrics_block_cur += metric_line
                     successes.append(success_score)
                     content += code_feedback
                 else:
@@ -288,9 +398,10 @@ def main(cfg):
 
                 content += code_output_tip
                 contents.append(content)
+                metrics_blocks.append(metrics_block_cur)
 
             if not run_records or (not exec_success and cfg.sample != 1):
-                execute_rates[island_id].append(0.)
+                execute_rates[island_id].append(0.0)
                 max_successes[island_id].append(DUMMY_FAILURE)
                 max_successes_reward_correlation[island_id].append(DUMMY_FAILURE)
                 best_code_paths[island_id].append(None)
@@ -303,7 +414,7 @@ def main(cfg):
 
             max_success = successes[best_sample_idx]
             max_success_reward_correlation = reward_correlations[best_sample_idx]
-            execute_rate = np.sum(np.array(successes) >= 0.) / max(len(successes), 1)
+            execute_rate = np.sum(np.array(successes) >= 0.0) / max(len(successes), 1)
 
             if max_success > max_success_overall:
                 max_success_overall = max_success
@@ -315,6 +426,8 @@ def main(cfg):
             max_successes[island_id].append(max_success)
             max_successes_reward_correlation[island_id].append(max_success_reward_correlation)
             best_code_paths[island_id].append(code_paths[best_sample_idx])
+            current_reward_code_for_next_iter[island_id] = run_records[best_sample_idx]["code_string"]
+            last_metrics_block[island_id] = metrics_blocks[best_sample_idx]
 
             logging.info(
                 f"Iteration {iter}, Island {island_id}: Max Success: {max_success}, "
@@ -332,17 +445,16 @@ def main(cfg):
                 island_messages[island_id][-2] = {"role": "assistant", "content": responses[best_response_id]["message"]["content"]}
                 island_messages[island_id][-1] = {"role": "user", "content": best_content}
 
-            with open(f'messages_island{island_id}.json', 'w') as file:
+            with open(f"messages_island{island_id}.json", "w") as file:
                 json.dump(island_messages[island_id], file, indent=4)
-            
-        # Plot the success rate
+
         fig, axs = plt.subplots(2, figsize=(6, 6))
-        fig.suptitle(f'{cfg.env.task}')
+        fig.suptitle(f"{cfg.env.task}")
 
         for island_id in range(num_islands):
             x_axis = np.arange(len(max_successes[island_id]))
-            axs[0].plot(x_axis, np.array(max_successes[island_id]), label=f'Island {island_id}')
-            axs[1].plot(x_axis, np.array(execute_rates[island_id]), label=f'Island {island_id}')
+            axs[0].plot(x_axis, np.array(max_successes[island_id]), label=f"Island {island_id}")
+            axs[1].plot(x_axis, np.array(execute_rates[island_id]), label=f"Island {island_id}")
 
         axs[0].set_title("Max Success")
         axs[0].set_xlabel("Iteration")
@@ -353,20 +465,19 @@ def main(cfg):
         axs[1].legend()
 
         fig.tight_layout(pad=3.0)
-        plt.savefig('summary.png')
+        plt.savefig("summary.png")
         np.savez(
-            'summary.npz',
+            "summary.npz",
             max_successes=np.array(max_successes),
             execute_rates=np.array(execute_rates),
             best_code_paths=np.array(best_code_paths, dtype=object),
             max_successes_reward_correlation=np.array(max_successes_reward_correlation),
         )
 
-        with open('messages.json', 'w') as file:
+        with open("messages.json", "w") as file:
             json.dump({f"island_{island_id}": island_messages[island_id] for island_id in range(num_islands)}, file, indent=4)
-    
-    # Evaluate the best reward code many times
-    if max_reward_code_path is None: 
+
+    if max_reward_code_path is None:
         logging.info("All iterations of code generation failed, aborting...")
         logging.info("Please double check the output env_iter*_response*.txt files for repeating errors!")
         exit()
@@ -377,21 +488,32 @@ def main(cfg):
     )
     logging.info(f"Evaluating best reward code {cfg.num_eval} times")
     shutil.copy(max_reward_code_path, output_file)
-    
+
     eval_runs = []
     for i in range(cfg.num_eval):
         set_freest_gpu()
-        
-        # Execute the python file with flags
+
         rl_filepath = f"reward_code_eval{i}.txt"
-        with open(rl_filepath, 'w') as f:
-            process = subprocess.Popen(['python', '-u', f'{ISAAC_ROOT_DIR}/train.py',  
-                                        'hydra/output=subprocess',
-                                        f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
-                                        f'wandb_entity={cfg.wandb_username}', f'wandb_project={cfg.wandb_project}',
-                                        f'headless={not cfg.capture_video}', f'capture_video={cfg.capture_video}', 'force_render=False', f'seed={i}',
-                                        ],
-                                        stdout=f, stderr=f)
+        with open(rl_filepath, "w") as f:
+            process = subprocess.Popen(
+                [
+                    "python",
+                    "-u",
+                    f"{ISAAC_ROOT_DIR}/train.py",
+                    "hydra/output=subprocess",
+                    f"task={task}{suffix}",
+                    f"wandb_activate={cfg.use_wandb}",
+                    f"wandb_entity={cfg.wandb_username}",
+                    f"wandb_project={cfg.wandb_project}",
+                    f"headless={not cfg.capture_video}",
+                    f"capture_video={cfg.capture_video}",
+                    "force_render=False",
+                    f"seed={i}",
+                ],
+                stdout=f,
+                stderr=f,
+                env=_SUBPROCESS_ENV,
+            )
 
         block_until_training(rl_filepath)
         eval_runs.append(process)
@@ -401,15 +523,15 @@ def main(cfg):
     for i, rl_run in enumerate(eval_runs):
         rl_run.communicate()
         rl_filepath = f"reward_code_eval{i}.txt"
-        with open(rl_filepath, 'r') as f:
-            stdout_str = f.read() 
-        lines = stdout_str.split('\n')
+        with open(rl_filepath, "r") as f:
+            stdout_str = f.read()
+        lines = stdout_str.split("\n")
         for i, line in enumerate(lines):
-            if line.startswith('Tensorboard Directory:'):
-                break 
-        tensorboard_logdir = line.split(':')[-1].strip() 
+            if line.startswith("Tensorboard Directory:"):
+                break
+        tensorboard_logdir = line.split(":")[-1].strip()
         tensorboard_logs = load_tensorboard_logs(tensorboard_logdir)
-        max_success = max(tensorboard_logs['consecutive_successes'])
+        max_success = max(tensorboard_logs["consecutive_successes"])
         reward_code_final_successes.append(max_success)
 
         if "gt_reward" in tensorboard_logs and "gpt_reward" in tensorboard_logs:
@@ -420,7 +542,7 @@ def main(cfg):
 
     logging.info(f"Final Success Mean: {np.mean(reward_code_final_successes)}, Std: {np.std(reward_code_final_successes)}, Raw: {reward_code_final_successes}")
     logging.info(f"Final Correlation Mean: {np.mean(reward_code_correlations_final)}, Std: {np.std(reward_code_correlations_final)}, Raw: {reward_code_correlations_final}")
-    np.savez('final_eval.npz', reward_code_final_successes=reward_code_final_successes, reward_code_correlations_final=reward_code_correlations_final)
+    np.savez("final_eval.npz", reward_code_final_successes=reward_code_final_successes, reward_code_correlations_final=reward_code_correlations_final)
 
 
 if __name__ == "__main__":

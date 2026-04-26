@@ -1,0 +1,26 @@
+The Feedback Interpreter produced this structured analysis of the current reward function and its RL training metrics:
+
+```json
+{interpreter_json}
+```
+
+CURRENT REWARD FUNCTION SOURCE:
+```python
+{current_reward_code}
+```
+
+ENVIRONMENT OBSERVATION CODE (the allowed self.* attributes — the Code Agent's new reward may ONLY reference attributes from this file):
+```python
+{task_obs_code_string}
+```
+
+REWARD FUNCTION SIGNATURE TEMPLATE (SHAPE/TYPE CONTRACT ONLY — the names `object_pos`/`goal_pos` below are GENERIC PLACEHOLDERS and MUST NOT be passed through to the Code Agent. Translate them into real parameter names derived from the `self.*` attributes the new reward will consume, e.g., `dof_pos`, `dof_vel`):
+{task_reward_signature_string}
+
+TASK DESCRIPTION (verbatim from the environment config):
+{task_description}
+
+HARD OUTPUT CONTRACT (you must encode these rules into the prompt you produce — not loosely, but faithfully):
+{code_output_tip}
+
+Now write the master prompt for the Code Agent. Follow the structure and principles in your system instructions. Plain text output only. The text you produce will be sent verbatim as the user message to the Code Agent.

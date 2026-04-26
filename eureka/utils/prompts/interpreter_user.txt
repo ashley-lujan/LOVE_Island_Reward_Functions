@@ -1,0 +1,20 @@
+TASK DESCRIPTION:
+{task_description}
+
+ENVIRONMENT OBSERVATION CODE (these are the only self.* attributes a reward function is allowed to consume):
+```python
+{task_obs_code_string}
+```
+
+CURRENT REWARD FUNCTION (this is what produced the metrics below):
+```python
+{current_reward_code}
+```
+
+RL TRAINING METRICS FROM THE MOST RECENT POLICY ROLLOUT:
+{metrics_block}
+
+HUMAN FEEDBACK:
+{human_feedback}
+
+Analyze the situation and return a single JSON object per the schema specified in your system instructions. Ground every claim in specific values from the metrics block above. Do not speculate. Return only JSON.
