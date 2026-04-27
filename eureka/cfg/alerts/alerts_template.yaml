@@ -1,0 +1,11 @@
+enabled: true
+gmail_user: "lujan.Ash@gmail.com"
+gmail_password: "password (look at discord)"
+recipient: "your email for alerts"
+
+# control which events trigger an email
+on_start: true
+on_finish: true
+on_error: true
+on_iteration: true      # alert every N iterations
+iteration_interval: 50  # only alert every 50 iterations

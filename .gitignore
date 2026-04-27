@@ -5,3 +5,8 @@ wandb
 venv_6955/
 eureka/cfg/chpc_alerts.cfg
 logs/
+eureka/env
+eureka/env_init_obs.py
+eureka/env_iter*.py
+eureka/env_iter*.txt
+eureka/cfg/alerts/alerts.yaml

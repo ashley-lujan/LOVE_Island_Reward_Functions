@@ -1,13 +1,13 @@
 defaults:
   - _self_
   - env: shadow_hand
+  - alerts: alerts
   - override hydra/launcher: local
   - override hydra/output: local
-  - alerts: alerts
 
 hydra:
   job:
-    chdir: True
+    chdir: False
 
 # LLM parameters
 model: gpt-5.4-mini  # LLM model (other options are gpt-4, gpt-4-0613, gpt-3.5-turbo-16k-0613)

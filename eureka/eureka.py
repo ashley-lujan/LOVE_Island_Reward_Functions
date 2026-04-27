@@ -16,6 +16,7 @@ from utils.misc import *
 from utils.file_utils import find_files_with_substring, load_tensorboard_logs
 from utils.create_task import create_task
 from utils.extract_task_code import *
+from alerts import setup_alerts, send_alert
 
 EUREKA_ROOT_DIR = os.getcwd()
 ISAAC_ROOT_DIR = f"{EUREKA_ROOT_DIR}/../isaacgymenvs/isaacgymenvs"
@@ -46,6 +47,8 @@ _SUBPROCESS_ENV = _build_subprocess_env()
 
 @hydra.main(config_path="cfg", config_name="config", version_base="1.1")
 def main(cfg):
+    EUREKA_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+    print("EUREKA_ROOT_DIR:", EUREKA_ROOT_DIR)
     if cfg.alerts.enabled:
         setup_alerts(cfg.alerts)
 

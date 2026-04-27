@@ -9,8 +9,8 @@
 #SBATCH --mem=16G
 #SBATCH --gres=gpu:1
 #SBATCH --time=01:00:00
-#SBATCH --output=logs/eureka_%j.out
-#SBATCH --error=logs/eureka_%j.err
+#SBATCH --output=logs/slurm-%j.out
+#SBATCH --error=logs/slurm-%j.err
 
 # ---------------------------------------------------------------------------
 # Environment setup
@@ -25,18 +25,16 @@ module load cuda/11.8       # verify version with: module spider cuda
 source $(conda info --base)/etc/profile.d/conda.sh
 conda activate eureka
 
-export HYDRA_FULL_ERROR=1
-# IsaacGym needs this to find shared libs — adjust path to wherever you installed it
-export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
 
 # ---------------------------------------------------------------------------
 # Run Eureka
 # ---------------------------------------------------------------------------
+cd $SLURM_SUBMIT_DIR/eureka
+# IsaacGym needs this to find shared libs — adjust path to wherever you installed it
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
-cd $SLURM_SUBMIT_DIR
-
-python eureka/eureka.py \
+python eureka.py \
     feedback_mode=multi \
     num_islands=4 \
     env=cartpole \
