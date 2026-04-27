@@ -3,3 +3,5 @@ outputs/
 *.egg-info/
 wandb
 venv_6955/
+eureka/cfg/chpc_alerts.cfg
+logs/
