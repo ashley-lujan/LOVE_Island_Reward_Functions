@@ -3,6 +3,7 @@ defaults:
   - env: shadow_hand
   - override hydra/launcher: local
   - override hydra/output: local
+  - alerts: alerts
 
 hydra:
   job:

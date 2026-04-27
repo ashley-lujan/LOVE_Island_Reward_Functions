@@ -46,6 +46,13 @@ _SUBPROCESS_ENV = _build_subprocess_env()
 
 @hydra.main(config_path="cfg", config_name="config", version_base="1.1")
 def main(cfg):
+    if cfg.alerts.enabled:
+        setup_alerts(cfg.alerts)
+
+    send_alert(cfg, "Job Started", 
+        f"Eureka started\nEnv: {cfg.env}\nModel: {cfg.model}\nIslands: {cfg.num_islands}"
+    )
+    
     workspace_dir = Path.cwd()
     logging.info(f"Workspace: {workspace_dir}")
     logging.info(f"Project Root: {EUREKA_ROOT_DIR}")
