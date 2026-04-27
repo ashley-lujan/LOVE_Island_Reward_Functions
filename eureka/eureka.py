@@ -125,10 +125,12 @@ def main(cfg):
     max_successes_reward_correlation = [[] for _ in range(num_islands)]
     execute_rates = [[] for _ in range(num_islands)]
     best_code_paths = [[] for _ in range(num_islands)]
+    best_checkpoint_paths = [[] for _ in range(num_islands)]
     max_success_overall = DUMMY_FAILURE
     max_success_reward_correlation_overall = DUMMY_FAILURE
     max_reward_code_path = None
     max_reward_code_island = None
+    max_reward_checkpoint_path = None
 
     # Eureka generation loop
     for iter in range(cfg.iteration):
@@ -155,6 +157,7 @@ def main(cfg):
                     prompt_human_feedback(iter, cfg, context={
                         "island_id": island_id,
                         "best_code_path": best_code_paths[island_id][-1] if best_code_paths[island_id] else None,
+                        "best_checkpoint_path": best_checkpoint_paths[island_id][-1] if best_checkpoint_paths[island_id] else None,
                         "metrics": last_metrics_block[island_id],
                     })
                     if cfg.human_feedback_enabled
@@ -361,10 +364,13 @@ def main(cfg):
                     exec_success = True
                     lines = stdout_str.split("\n")
                     tensorboard_logdir = ""
+                    checkpoint_dir = ""
                     for line in lines:
-                        if line.startswith("Tensorboard Directory:"):
-                            tensorboard_logdir = line.split(":")[-1].strip()
-                            break
+                        if line.startswith("Network Directory:"):
+                            checkpoint_dir = line.split(":", 1)[1].strip()
+                        elif line.startswith("Tensorboard Directory:"):
+                            tensorboard_logdir = line.split(":", 1)[1].strip()
+                    run_record["checkpoint_dir"] = checkpoint_dir
                     tensorboard_logs = load_tensorboard_logs(tensorboard_logdir)
                     max_iterations = np.array(tensorboard_logs["gt_reward"]).shape[0]
                     epoch_freq = max(int(max_iterations // 10), 1)
@@ -419,6 +425,7 @@ def main(cfg):
                 max_successes[island_id].append(DUMMY_FAILURE)
                 max_successes_reward_correlation[island_id].append(DUMMY_FAILURE)
                 best_code_paths[island_id].append(None)
+                best_checkpoint_paths[island_id].append(None)
                 logging.info(f"Iteration {iter}, Island {island_id}: All code generation failed. Keeping the prior island state.")
                 continue
 
@@ -435,11 +442,13 @@ def main(cfg):
                 max_success_reward_correlation_overall = max_success_reward_correlation
                 max_reward_code_path = code_paths[best_sample_idx]
                 max_reward_code_island = island_id
+                max_reward_checkpoint_path = run_records[best_sample_idx].get("checkpoint_dir")
 
             execute_rates[island_id].append(execute_rate)
             max_successes[island_id].append(max_success)
             max_successes_reward_correlation[island_id].append(max_success_reward_correlation)
             best_code_paths[island_id].append(code_paths[best_sample_idx])
+            best_checkpoint_paths[island_id].append(run_records[best_sample_idx].get("checkpoint_dir"))
             current_reward_code_for_next_iter[island_id] = run_records[best_sample_idx]["code_string"]
             last_metrics_block[island_id] = metrics_blocks[best_sample_idx]
 
@@ -485,6 +494,7 @@ def main(cfg):
             max_successes=np.array(max_successes),
             execute_rates=np.array(execute_rates),
             best_code_paths=np.array(best_code_paths, dtype=object),
+            best_checkpoint_paths=np.array(best_checkpoint_paths, dtype=object),
             max_successes_reward_correlation=np.array(max_successes_reward_correlation),
         )
 

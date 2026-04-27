@@ -11,17 +11,16 @@
 #SBATCH -o logs/love-island-%j.out
 #SBATCH -e logs/love-island-%j.err
 
-# ── Environment ──────────────────────────────────────────────────────────────
+# ── Environment 
 source /uufs/chpc.utah.edu/common/home/u1427573/software/pkg/miniforge3/etc/profile.d/conda.sh
 conda activate eureka
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
+# ── Paths 
 REPO=/uufs/chpc.utah.edu/common/home/u1427573/LOVE_Island_Reward_Functions
 SCRATCH=/scratch/general/vast/${USER}/love_island
 
 mkdir -p "${SCRATCH}" "${REPO}/logs"
 
-# ── OpenAI key (set in your environment or uncomment and fill in below) ───────
 # export OPENAI_API_KEY="sk-..."
 
 # ── Note: SLURM sets CUDA_VISIBLE_DEVICES — do not override with gpustat ──────
@@ -29,7 +28,7 @@ echo "Job ${SLURM_JOB_ID} running on $(hostname), GPU(s): ${CUDA_VISIBLE_DEVICES
 echo "Scratch feedback path: ${SCRATCH}"
 echo "SLURM log: logs/love-island-${SLURM_JOB_ID}.out"
 
-# ── Launch ────────────────────────────────────────────────────────────────────
+# ── Launch 
 cd "${REPO}/eureka"
 
 python eureka.py \
