@@ -508,6 +508,7 @@ def main(cfg):
                     f"headless={not cfg.capture_video}",
                     f"capture_video={cfg.capture_video}",
                     "force_render=False",
+                    f"max_iterations={cfg.max_iterations}",
                     f"seed={i}",
                 ],
                 stdout=f,
