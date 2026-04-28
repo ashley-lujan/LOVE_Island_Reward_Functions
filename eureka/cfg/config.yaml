@@ -38,3 +38,40 @@ human_feedback_timeout: 0          # minutes to wait for file-based feedback; 0 
 feedback_scratch_path: ""          # set to a shared scratch path (e.g. /scratch/general/vast/<user>/love_island) for file-based SLURM feedback
 multi_agent_trace_dir: multi_agent_trace
 multi_agent_strict_json: true      # if interpreter JSON fails after 1 repair retry, fall back to single-call for that iter
+
+# Backend selection
+backend: isaaclab              # 'isaaclab' | 'isaacgym'
+container_path: ""             # override via ISAACLAB_CONTAINER env var (path to .sif file)
+num_envs: 512                  # parallel environments per training run
+runs_dir: ""                   # override via SLURM script (e.g. ${SCRATCH}/runs); defaults to eureka/runs/
+
+# LOVE Island — human-in-the-loop adaptive reward system
+# Set enabled: true and run love_island.py instead of eureka.py
+love_island:
+  enabled: false
+  # Evaluation buffer
+  buffer_capacity: 20          # total slots (random + interesting)
+  random_ratio: 0.25           # fraction of buffer refreshed each mini-iteration
+  staleness_penalty: 0.02      # σ reduction per mini-iteration of age in interesting slots
+  high_sigma_threshold: 0.2    # minimum σ to enter interesting slots
+  # Pattern detection thresholds
+  high_threshold: 0.3          # σ above which disagreement is high
+  low_threshold: 0.1           # σ below which ensemble is confident
+  bad_threshold: 0.3           # mean reward below which performance is poor
+  good_threshold: 0.7          # mean reward above which performance is good
+  # Querying policy
+  warmup_iterations: 2         # mini-iterations before any querying allowed
+  persistence_threshold: 3     # consecutive mini-iterations a pattern must hold before query
+  # Pattern detection windows
+  spike_window: 5              # rolling window (mini-iterations) for spike detection
+  spike_k: 2.0                 # std deviations above mean to call a spike
+  stagnation_window: 10        # window for stagnation detection
+  # Post-update checks (Signals 2 & 3)
+  n_probe: 50                  # number of terminal states used for post-update σ check
+  retrain_delta: 0.05          # σ increase above baseline that triggers full retrain
+  reflection_window: 3         # mini-iterations between reflection checks
+  improvement_threshold: 0.05  # minimum Δμ required to pass Signal 3 reflection
+  max_reflection_retries: 3    # Code Agent retries before escalating back to human
+  # Video rendering
+  max_traj_files: 100          # ring buffer depth for trajectory files per env
+  max_gif_episodes: 2          # GIFs to render per feedback query

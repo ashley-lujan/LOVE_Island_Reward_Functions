@@ -14,6 +14,17 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import openai
+from openai import OpenAI as _OpenAI
+
+_openai_client: Optional[_OpenAI] = None
+
+
+def _get_client() -> _OpenAI:
+    """Lazy singleton so the client is created after OPENAI_API_KEY is set."""
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = _OpenAI()
+    return _openai_client
 
 
 _REQUIRED_ARCHITECT_SUBSTRINGS = (
@@ -90,20 +101,19 @@ def _chat_call(
     n: int = 1,
     max_retries: int = 10,
 ):
-    """Call openai.ChatCompletion with the same chunked-retry logic as eureka.py."""
+    """Call the OpenAI chat completions endpoint with chunked-retry logic."""
     chunk_size = n
     total_samples = 0
     all_choices: List[Any] = []
     total_prompt_tokens = 0
     total_completion_tokens = 0
     total_tokens = 0
-    last_response: Optional[Dict[str, Any]] = None
 
     while total_samples < n:
         response = None
         for attempt in range(1000):
             try:
-                response = openai.ChatCompletion.create(
+                response = _get_client().chat.completions.create(
                     model=model,
                     messages=messages,
                     temperature=temperature,
@@ -118,20 +128,23 @@ def _chat_call(
                 time.sleep(1)
         if response is None:
             raise RuntimeError("multi-agent chat call failed after repeated retries")
-        all_choices.extend(response["choices"])
-        total_prompt_tokens = response["usage"]["prompt_tokens"]
-        total_completion_tokens += response["usage"]["completion_tokens"]
-        total_tokens += response["usage"]["total_tokens"]
-        last_response = response
+        # Normalize to dicts so all downstream code uses consistent dict access.
+        all_choices.extend([
+            {"message": {"role": c.message.role, "content": c.message.content}}
+            for c in response.choices
+        ])
+        total_prompt_tokens = response.usage.prompt_tokens
+        total_completion_tokens += response.usage.completion_tokens
+        total_tokens += response.usage.total_tokens
 
-    merged = dict(last_response) if last_response is not None else {}
-    merged["choices"] = all_choices
-    merged["usage"] = {
-        "prompt_tokens": total_prompt_tokens,
-        "completion_tokens": total_completion_tokens,
-        "total_tokens": total_tokens,
+    return {
+        "choices": all_choices,
+        "usage": {
+            "prompt_tokens": total_prompt_tokens,
+            "completion_tokens": total_completion_tokens,
+            "total_tokens": total_tokens,
+        },
     }
-    return merged
 
 
 def _extract_json(raw_text: str) -> Dict[str, Any]:

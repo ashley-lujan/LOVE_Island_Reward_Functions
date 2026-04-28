@@ -26,20 +26,34 @@ def filter_traceback(s):
     lines = s.split('\n')
     filtered_lines = []
     for i, line in enumerate(lines):
-        if line.startswith('Traceback'):
+        # Match both bare Python tracebacks and Isaac Lab's prefixed format:
+        # [omni.kit.app._impl] [py stderr]: Traceback (most recent call last):
+        is_traceback_start = line.startswith('Traceback') or (
+            '[py stderr]:' in line and 'Traceback' in line
+        )
+        if is_traceback_start:
             for j in range(i, len(lines)):
                 if "Set the environment variable HYDRA_FULL_ERROR=1" in lines[j]:
                     break
-                filtered_lines.append(lines[j])
+                # Strip Isaac Lab's timestamp/prefix for readability
+                clean = lines[j]
+                if '[py stderr]:' in clean:
+                    clean = clean.split('[py stderr]:', 1)[-1].strip()
+                filtered_lines.append(clean)
             return '\n'.join(filtered_lines)
     return ''  # Return an empty string if no Traceback is found
 
 def block_until_training(rl_filepath, log_status=False, iter_num=-1, response_id=-1):
-    # Ensure that the RL training has started before moving on
+    # Ensure that the RL training has started before moving on.
+    # "fps step:" = IsaacGym rl_games stdout signal.
+    # "Tensorboard Directory:" = Isaac Lab isaaclab_train.py early print (flush=True),
+    #   used because Kit Python intercepts print() and routes it through its own logger,
+    #   so rl_games' fps output never reaches our captured file.
     while True:
         rl_log = file_to_string(rl_filepath)
-        if "fps step:" in rl_log or "Traceback" in rl_log:
-            if log_status and "fps step:" in rl_log:
+        started = "fps step:" in rl_log or "Tensorboard Directory:" in rl_log
+        if started or "Traceback" in rl_log:
+            if log_status and started:
                 logging.info(f"Iteration {iter_num}: Code Run {response_id} successfully training!")
             if log_status and "Traceback" in rl_log:
                 logging.info(f"Iteration {iter_num}: Code Run {response_id} execution error!")

@@ -4,6 +4,11 @@ import yaml
 # task = 'Cartpole'
 # suffix = 'GPT'
 
+def create_task_isaaclab(root_dir, task, env_name, suffix):
+    """No-op for Isaac Lab: tasks are loaded dynamically, no YAML registration needed."""
+    pass
+
+
 def create_task(root_dir, task, env_name, suffix):
     # Create task YAML file 
     input_file = f"{root_dir}/cfg/task/{task}.yaml"

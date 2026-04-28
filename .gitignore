@@ -10,3 +10,4 @@ eureka/env_init_obs.py
 eureka/env_iter*.py
 eureka/env_iter*.txt
 eureka/cfg/alerts/alerts.yaml
+.claude/*

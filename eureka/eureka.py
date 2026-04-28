@@ -48,6 +48,7 @@ _SUBPROCESS_ENV = _build_subprocess_env()
 @hydra.main(config_path="cfg", config_name="config", version_base="1.1")
 def main(cfg):
     EUREKA_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+    REPO_ROOT = str(Path(EUREKA_ROOT_DIR).parent)
     print("EUREKA_ROOT_DIR:", EUREKA_ROOT_DIR)
     if cfg.alerts.enabled:
         setup_alerts(cfg.alerts)
@@ -60,7 +61,7 @@ def main(cfg):
     logging.info(f"Workspace: {workspace_dir}")
     logging.info(f"Project Root: {EUREKA_ROOT_DIR}")
 
-    openai.api_key = os.getenv("OPENAI_API_KEY")
+    _openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
     task = cfg.env.task
     task_description = cfg.env.description
@@ -71,13 +72,22 @@ def main(cfg):
     logging.info("Task description: " + task_description)
 
     env_name = cfg.env.env_name.lower()
-    env_parent = 'isaac' if f'{env_name}.py' in os.listdir(f'{EUREKA_ROOT_DIR}/envs/isaac') else 'dexterity'
+    backend = getattr(cfg, "backend", "isaacgym")
+    if backend == "isaaclab":
+        env_parent = "isaaclab"
+    elif f'{env_name}.py' in os.listdir(f'{EUREKA_ROOT_DIR}/envs/isaac'):
+        env_parent = "isaac"
+    else:
+        env_parent = "dexterity"
     task_file = f'{EUREKA_ROOT_DIR}/envs/{env_parent}/{env_name}.py'
     task_obs_file = f'{EUREKA_ROOT_DIR}/envs/{env_parent}/{env_name}_obs.py'
     shutil.copy(task_obs_file, "env_init_obs.py")
     task_code_string = file_to_string(task_file)
     task_obs_code_string = file_to_string(task_obs_file)
-    output_file = f"{ISAAC_ROOT_DIR}/tasks/{env_name}{suffix.lower()}.py"
+    if backend == "isaaclab":
+        output_file = f"{EUREKA_ROOT_DIR}/envs/isaaclab/{env_name}{suffix.lower()}.py"
+    else:
+        output_file = f"{ISAAC_ROOT_DIR}/tasks/{env_name}{suffix.lower()}.py"
 
     # Loading all text prompts
     prompt_dir = f'{EUREKA_ROOT_DIR}/utils/prompts'
@@ -117,8 +127,9 @@ def main(cfg):
             f"trace_dir={trace_dir}"
         )
 
-    task_code_string = task_code_string.replace(task, task + suffix)
-    create_task(ISAAC_ROOT_DIR, cfg.env.task, cfg.env.env_name, suffix)
+    if backend != "isaaclab":
+        task_code_string = task_code_string.replace(task, task + suffix)
+        create_task(ISAAC_ROOT_DIR, cfg.env.task, cfg.env.env_name, suffix)
 
     DUMMY_FAILURE = -10000.0
     max_successes = [[] for _ in range(num_islands)]
@@ -201,7 +212,7 @@ def main(cfg):
                     n_samples = min(chunk_size, cfg.sample - total_samples)
                     for attempt in range(1000):
                         try:
-                            response_cur = openai.ChatCompletion.create(
+                            response_cur = _openai_client.chat.completions.create(
                                 model=model,
                                 messages=island_messages[island_id],
                                 temperature=cfg.temperature,
@@ -219,10 +230,14 @@ def main(cfg):
                         logging.info("Code terminated due to too many failed attempts!")
                         exit()
 
-                    responses.extend(response_cur["choices"])
-                    prompt_tokens = response_cur["usage"]["prompt_tokens"]
-                    total_completion_token += response_cur["usage"]["completion_tokens"]
-                    total_token += response_cur["usage"]["total_tokens"]
+                    # Normalize to dicts for consistent access throughout the loop.
+                    responses.extend([
+                        {"message": {"role": c.message.role, "content": c.message.content}}
+                        for c in response_cur.choices
+                    ])
+                    prompt_tokens = response_cur.usage.prompt_tokens
+                    total_completion_token += response_cur.usage.completion_tokens
+                    total_token += response_cur.usage.total_tokens
 
             if cfg.sample == 1:
                 logging.info(f"Iteration {iter}, Island {island_id}: GPT Output:\n " + responses[0]["message"]["content"] + "\n")
@@ -264,30 +279,40 @@ def main(cfg):
                     logging.info(f"Iteration {iter}, Island {island_id}: Code Run {response_id} cannot parse function signature!")
                     continue
 
-                reward_signature = [
-                    f"self.rew_buf[:], self.rew_dict = {gpt_reward_signature}",
-                    f"self.extras['gpt_reward'] = self.rew_buf.mean()",
-                    f"for rew_state in self.rew_dict: self.extras[rew_state] = self.rew_dict[rew_state].mean()",
-                ]
-                indent = " " * 8
-                reward_signature = "\n".join([indent + line for line in reward_signature])
-                if "def compute_reward(self)" in task_code_string:
-                    task_code_string_iter = task_code_string.replace("def compute_reward(self):", "def compute_reward(self):\n" + reward_signature)
-                elif "def compute_reward(self, actions)" in task_code_string:
-                    task_code_string_iter = task_code_string.replace("def compute_reward(self, actions):", "def compute_reward(self, actions):\n" + reward_signature)
-                else:
-                    raise NotImplementedError
-
                 if "@torch.jit.script" not in code_string:
                     code_string = "@torch.jit.script\n" + code_string
 
-                with open(output_file, "w") as file:
-                    file.writelines(task_code_string_iter + "\n")
-                    file.writelines("from typing import Tuple, Dict\n")
-                    file.writelines("import math\n")
-                    file.writelines("import torch\n")
-                    file.writelines("from torch import Tensor\n")
-                    file.writelines(code_string + "\n")
+                if backend == "isaaclab":
+                    # Isaac Lab: append compute_reward as a module-level function.
+                    # _get_rewards() detects it via globals() and calls it directly.
+                    with open(output_file, "w") as file:
+                        file.writelines(task_code_string + "\n")
+                        file.writelines("from typing import Tuple, Dict\n")
+                        file.writelines("import torch\n")
+                        file.writelines(code_string + "\n")
+                else:
+                    # Isaac Gym: inject call into the class body's compute_reward method.
+                    reward_signature = [
+                        f"self.rew_buf[:], self.rew_dict = {gpt_reward_signature}",
+                        f"self.extras['gpt_reward'] = self.rew_buf.mean()",
+                        f"for rew_state in self.rew_dict: self.extras[rew_state] = self.rew_dict[rew_state].mean()",
+                    ]
+                    indent = " " * 8
+                    reward_signature = "\n".join([indent + line for line in reward_signature])
+                    if "def compute_reward(self)" in task_code_string:
+                        task_code_string_iter = task_code_string.replace("def compute_reward(self):", "def compute_reward(self):\n" + reward_signature)
+                    elif "def compute_reward(self, actions)" in task_code_string:
+                        task_code_string_iter = task_code_string.replace("def compute_reward(self, actions):", "def compute_reward(self, actions):\n" + reward_signature)
+                    else:
+                        raise NotImplementedError
+
+                    with open(output_file, "w") as file:
+                        file.writelines(task_code_string_iter + "\n")
+                        file.writelines("from typing import Tuple, Dict\n")
+                        file.writelines("import math\n")
+                        file.writelines("import torch\n")
+                        file.writelines("from torch import Tensor\n")
+                        file.writelines(code_string + "\n")
 
                 reward_only_path = f"env_iter{iter}_response{response_id}_island{island_id}_rewardonly.py"
                 env_code_path = f"env_iter{iter}_response{response_id}_island{island_id}.py"
@@ -298,27 +323,59 @@ def main(cfg):
 
                 shutil.copy(output_file, env_code_path)
 
-                set_freest_gpu()
-                with open(rl_filepath, "w") as f:
-                    process = subprocess.Popen(
-                        [
-                            "python",
-                            "-u",
-                            f"{ISAAC_ROOT_DIR}/train.py",
-                            "hydra/output=subprocess",
-                            f"task={task}{suffix}",
-                            f"wandb_activate={cfg.use_wandb}",
-                            f"wandb_entity={cfg.wandb_username}",
-                            f"wandb_project={cfg.wandb_project}",
-                            f"headless={not cfg.capture_video}",
-                            f"capture_video={cfg.capture_video}",
-                            "force_render=False",
-                            f"max_iterations={cfg.max_iterations}",
-                        ],
-                        stdout=f,
-                        stderr=f,
-                        env=_SUBPROCESS_ENV,
-                    )
+                if backend == "isaaclab":
+                    _container = os.getenv("ISAACLAB_CONTAINER", getattr(cfg, "container_path", ""))
+                    _scratch = os.getenv("SCRATCH_DIR", f"/scratch/general/vast/{os.getenv('USER', '')}")
+                    # Local assets dir (cartpole.usda etc.) — created by scripts/create_cartpole_usd.py
+                    _user = os.getenv("USER", "")
+                    _local_assets = f"/scratch/general/vast/{_user}/isaac-assets"
+                    _runs_dir = getattr(cfg, "runs_dir", "") or f"{EUREKA_ROOT_DIR}/runs"
+                    _run_name = f"env_iter{iter}_response{response_id}_island{island_id}"
+                    with open(rl_filepath, "w") as f:
+                        process = subprocess.Popen(
+                            [
+                                "apptainer", "exec", "--nv",
+                                "--bind", f"{REPO_ROOT}:{REPO_ROOT}",
+                                "--bind", f"{_scratch}/isaac-sim-cache:/isaac-sim/kit/cache",
+                                "--bind", f"{_scratch}/isaac-sim-data:/isaac-sim/kit/data",
+                                "--bind", f"{_local_assets}:/local-assets",
+                                "--env", "ACCEPT_EULA=Y",
+                                "--env", "PRIVACY_CONSENT=Y",
+                                _container,
+                                "/isaac-sim/python.sh",
+                                f"{REPO_ROOT}/isaaclab_train.py",
+                                f"--task={task}{suffix}",
+                                "--headless",
+                                f"--max_iterations={cfg.max_iterations}",
+                                f"--num_envs={getattr(cfg, 'num_envs', 512)}",
+                                f"--run_name={_run_name}",
+                                f"--runs_dir={_runs_dir}",
+                            ],
+                            stdout=f,
+                            stderr=f,
+                        )
+                else:
+                    set_freest_gpu()
+                    with open(rl_filepath, "w") as f:
+                        process = subprocess.Popen(
+                            [
+                                "python",
+                                "-u",
+                                f"{ISAAC_ROOT_DIR}/train.py",
+                                "hydra/output=subprocess",
+                                f"task={task}{suffix}",
+                                f"wandb_activate={cfg.use_wandb}",
+                                f"wandb_entity={cfg.wandb_username}",
+                                f"wandb_project={cfg.wandb_project}",
+                                f"headless={not cfg.capture_video}",
+                                f"capture_video={cfg.capture_video}",
+                                "force_render=False",
+                                f"max_iterations={cfg.max_iterations}",
+                            ],
+                            stdout=f,
+                            stderr=f,
+                            env=_SUBPROCESS_ENV,
+                        )
                 block_until_training(rl_filepath, log_status=False)
                 run_records.append(
                     {
@@ -361,7 +418,6 @@ def main(cfg):
                 traceback_msg = filter_traceback(stdout_str)
 
                 if traceback_msg == "":
-                    exec_success = True
                     lines = stdout_str.split("\n")
                     tensorboard_logdir = ""
                     checkpoint_dir = ""
@@ -371,7 +427,29 @@ def main(cfg):
                         elif line.startswith("Tensorboard Directory:"):
                             tensorboard_logdir = line.split(":", 1)[1].strip()
                     run_record["checkpoint_dir"] = checkpoint_dir
-                    tensorboard_logs = load_tensorboard_logs(tensorboard_logdir)
+
+                    tensorboard_logs = load_tensorboard_logs(tensorboard_logdir) if tensorboard_logdir else {}
+                    if not tensorboard_logs.get("gt_reward"):
+                        # Training ran but produced no usable metrics (crashed silently
+                        # or finished before writing any TensorBoard events).
+                        logging.info(
+                            f"Iteration {iter}, Island {island_id}: Code Run {response_id} "
+                            "produced no TensorBoard metrics — treating as execution error."
+                        )
+                        traceback_msg = (
+                            "Training completed without errors but no 'gt_reward' metrics "
+                            "were written to TensorBoard. The reward function may have caused "
+                            "a silent crash or training terminated immediately."
+                        )
+                        successes.append(DUMMY_FAILURE)
+                        reward_correlations.append(DUMMY_FAILURE)
+                        content += execution_error_feedback.format(traceback_msg=traceback_msg)
+                        content += code_output_tip
+                        contents.append(content)
+                        metrics_blocks.append("")
+                        continue
+
+                    exec_success = True
                     max_iterations = np.array(tensorboard_logs["gt_reward"]).shape[0]
                     epoch_freq = max(int(max_iterations // 10), 1)
 
@@ -515,29 +593,60 @@ def main(cfg):
 
     eval_runs = []
     for i in range(cfg.num_eval):
-        set_freest_gpu()
-
         rl_filepath = f"reward_code_eval{i}.txt"
-        with open(rl_filepath, "w") as f:
-            process = subprocess.Popen(
-                [
-                    "python",
-                    "-u",
-                    f"{ISAAC_ROOT_DIR}/train.py",
-                    "hydra/output=subprocess",
-                    f"task={task}{suffix}",
-                    f"wandb_activate={cfg.use_wandb}",
-                    f"wandb_entity={cfg.wandb_username}",
-                    f"wandb_project={cfg.wandb_project}",
-                    f"headless={not cfg.capture_video}",
-                    f"capture_video={cfg.capture_video}",
-                    "force_render=False",
-                    f"seed={i}",
-                ],
-                stdout=f,
-                stderr=f,
-                env=_SUBPROCESS_ENV,
-            )
+        if backend == "isaaclab":
+            _container = os.getenv("ISAACLAB_CONTAINER", getattr(cfg, "container_path", ""))
+            _scratch = os.getenv("SCRATCH_DIR", f"/scratch/general/vast/{os.getenv('USER', '')}")
+            _user = os.getenv("USER", "")
+            _local_assets = f"/scratch/general/vast/{_user}/isaac-assets"
+            _runs_dir = getattr(cfg, "runs_dir", "") or f"{EUREKA_ROOT_DIR}/runs"
+            _run_name = f"reward_code_eval{i}"
+            with open(rl_filepath, "w") as f:
+                process = subprocess.Popen(
+                    [
+                        "apptainer", "exec", "--nv",
+                        "--bind", f"{REPO_ROOT}:{REPO_ROOT}",
+                        "--bind", f"{_scratch}/isaac-sim-cache:/isaac-sim/kit/cache",
+                        "--bind", f"{_scratch}/isaac-sim-data:/isaac-sim/kit/data",
+                        "--bind", f"{_local_assets}:/local-assets",
+                        "--env", "ACCEPT_EULA=Y",
+                        "--env", "PRIVACY_CONSENT=Y",
+                        _container,
+                        "/isaac-sim/python.sh",
+                        f"{REPO_ROOT}/isaaclab_train.py",
+                        f"--task={task}{suffix}",
+                        "--headless",
+                        f"--max_iterations={cfg.max_iterations}",
+                        f"--num_envs={getattr(cfg, 'num_envs', 512)}",
+                        f"--run_name={_run_name}",
+                        f"--runs_dir={_runs_dir}",
+                        f"--seed={i}",
+                    ],
+                    stdout=f,
+                    stderr=f,
+                )
+        else:
+            set_freest_gpu()
+            with open(rl_filepath, "w") as f:
+                process = subprocess.Popen(
+                    [
+                        "python",
+                        "-u",
+                        f"{ISAAC_ROOT_DIR}/train.py",
+                        "hydra/output=subprocess",
+                        f"task={task}{suffix}",
+                        f"wandb_activate={cfg.use_wandb}",
+                        f"wandb_entity={cfg.wandb_username}",
+                        f"wandb_project={cfg.wandb_project}",
+                        f"headless={not cfg.capture_video}",
+                        f"capture_video={cfg.capture_video}",
+                        "force_render=False",
+                        f"seed={i}",
+                    ],
+                    stdout=f,
+                    stderr=f,
+                    env=_SUBPROCESS_ENV,
+                )
 
         block_until_training(rl_filepath)
         eval_runs.append(process)

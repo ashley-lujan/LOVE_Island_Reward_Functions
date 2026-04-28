@@ -15,7 +15,17 @@
       "Bash(python -m py_compile utils/compare_runs.py)",
       "Bash(py -3 -c \"import ast, sys; [ast.parse\\(open\\(p, encoding='utf-8'\\).read\\(\\)\\) for p in ['c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/eureka.py', 'c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/utils/multi_agent.py', 'c:/Users/ttkre/OneDrive/Desktop/Programming/EurekaFriends/LOVE_Island_Reward_Functions/eureka/utils/compare_runs.py']]; print\\('ALL_OK'\\)\")",
       "Bash(chmod +x *)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(xargs -I {} sh -c 'echo \"=== {} ===\" && head -30 {}')",
+      "Bash(sbatch /uufs/chpc.utah.edu/common/home/u1427573/LOVE_Island_Reward_Functions/job_scripts/inspect_isaaclab.sh)",
+      "Bash(sbatch /uufs/chpc.utah.edu/common/home/u1427573/LOVE_Island_Reward_Functions/job_scripts/inspect_cartpole.sh)",
+      "Bash(sbatch job_scripts/slurm_love_island.sh env=cartpole sample=1 iteration=1 max_iterations=100 num_islands=1 human_feedback_enabled=false)",
+      "Bash(sbatch *)",
+      "Read(//scratch/general/vast/u1427573/love_island/**)",
+      "Read(//scratch/general/vast/u1427573/love_island/outputs/**)",
+      "Bash(grep *)",
+      "Bash(squeue *)",
+      "Bash(xargs cat *)"
     ]
   }
 }

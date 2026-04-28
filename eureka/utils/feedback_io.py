@@ -19,35 +19,19 @@ def _iter_dir(scratch_path: str, iter_idx: int) -> str:
     return os.path.join(scratch_path, f"iter{iter_idx}")
 
 
-def _render_rollout_stub(iter_idx: int, scratch_path: str) -> None:
-    # TODO: implement rollout rendering once disagreement metric is defined.
-    # This stub creates the videos/ directory so the path structure is ready.
-    video_dir = os.path.join(_iter_dir(scratch_path, iter_idx), "videos")
-    os.makedirs(video_dir, exist_ok=True)
-    logging.info(
-        f"[feedback] [TODO] Video rendering not yet implemented — disagreement metric TBD. "
-        f"Videos dir reserved at: {video_dir}"
-    )
-
-
 def write_feedback_request(iter_idx: int, scratch_path: str, context: Dict[str, Any]) -> None:
     """Write a feedback request to scratch and set the WAITING sentinel.
 
     Called by the training job before entering the polling loop. The context dict
     should contain whatever information is useful for the reviewer (metrics, best
-    code path, island id, etc.).
+    code path, island id, gif_paths, etc.).
     """
     iter_dir = _iter_dir(scratch_path, iter_idx)
     os.makedirs(iter_dir, exist_ok=True)
 
-    _render_rollout_stub(iter_idx, scratch_path)
-
-    video_dir = os.path.join(iter_dir, "videos")
     request = {
         "iter": iter_idx,
         **context,
-        "video_dir": video_dir,
-        "video_paths": [],  # populated when render stub is implemented
         "submit_cmd": (
             f"python submit_feedback.py "
             f"--scratch {scratch_path} --iter {iter_idx} "
