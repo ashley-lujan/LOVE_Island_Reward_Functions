@@ -75,8 +75,6 @@ class DisagreementMonitor:
             return {"mean_sigma": 0.0, "mean_reward": 0.0, "n_states": 0, "skipped": False}
 
         import torch
-
-        # Merge all state dicts — cat each key across runs
         merged: Dict[str, list] = {}
         for s in all_states:
             for k, v in s.items():
@@ -86,16 +84,15 @@ class DisagreementMonitor:
         joint_pos = full_state_dict["joint_pos"]
         joint_vel = full_state_dict["joint_vel"]
 
-        # Load reward functions
         reward_fns = [load_reward_fn(p) for p in reward_fn_paths]
         active = sum(1 for fn in reward_fns if fn is not None)
         logging.info(f"[monitor] iter {self._mini_iteration}: {active}/{len(reward_fns)} reward fns loaded")
-
         if active < 2:
             logging.warning("[monitor] fewer than 2 reward fns — σ will be 0")
 
-        sigmas, mean_rewards = compute_sigma_batch(reward_fns, joint_pos, joint_vel,
-                                                    state_dict=full_state_dict)
+        sigmas, mean_rewards = compute_sigma_batch(
+            reward_fns, joint_pos, joint_vel, state_dict=full_state_dict
+        )
 
         mean_sigma = float(sigmas.mean())
         mean_reward = float(mean_rewards.mean())

@@ -50,13 +50,13 @@ python love_island.py \
     backend=isaaclab \
     love_island.enabled=true \
     \
-    num_islands=4 \
+    num_islands=2 \
     sample=1 \
     iteration=5 \
-    max_iterations=200 \
+    max_iterations=100 \
     \
     feedback_mode=multi \
-    human_feedback_enabled=false \
+    human_feedback_enabled=true \
     human_feedback_timeout=30 \
     feedback_scratch_path="${SCRATCH}" \
     runs_dir="${SCRATCH}/runs" \

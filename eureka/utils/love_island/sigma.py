@@ -52,30 +52,26 @@ def load_terminal_states(states_dir: str) -> Optional[Dict[str, torch.Tensor]]:
         return None
 
     parts: Dict[str, List[torch.Tensor]] = {}
-
     for f in files:
         try:
             data = torch.load(f, map_location="cpu", weights_only=True)
             for key, tensor in data.items():
-                parts.setdefault(key, []).append(tensor)
+                if isinstance(tensor, torch.Tensor):
+                    parts.setdefault(key, []).append(tensor)
         except Exception as e:
             logging.warning(f"[sigma] skipping {f}: {e}")
 
     if not parts:
         return None
 
-    # Validate consistent shapes before concatenating — mismatched dims means
-    # files from different envs (e.g. stale cartpole mixed with ant). Drop bad files.
     result = {}
     for key, tensors in parts.items():
-        if len(tensors) == 0:
-            continue
-        ref_shape = tensors[0].shape[1:]  # everything after batch dim must match
+        ref_shape = tensors[0].shape[1:]
         valid = [t for t in tensors if t.shape[1:] == ref_shape]
         if len(valid) < len(tensors):
             logging.warning(
-                f"[sigma] key '{key}': dropped {len(tensors)-len(valid)} files "
-                f"with mismatched shape (expected {ref_shape})"
+                f"[sigma] key '{key}': dropped {len(tensors)-len(valid)} "
+                f"files with mismatched shape (expected trailing shape {ref_shape})"
             )
         if valid:
             result[key] = torch.cat(valid, dim=0)
@@ -89,18 +85,11 @@ def compute_sigma_batch(
     joint_vel: torch.Tensor,
     state_dict: Optional[Dict[str, torch.Tensor]] = None,
 ) -> tuple:
-    """Compute per-state σ across reward functions.
-
-    Uses schema-based dispatch: reads each fn's argument names from its
-    torch.jit schema and looks them up in state_dict. Falls back to
-    (joint_pos, joint_vel) for cartpole-style fns that only need those two.
-    """
     active_fns = [fn for fn in reward_fns if fn is not None]
     if not active_fns:
         n = joint_pos.shape[0]
         return np.zeros(n), np.zeros(n)
 
-    # Build a lookup table from all available tensors
     available = {"joint_pos": joint_pos, "joint_vel": joint_vel}
     if state_dict:
         available.update({k: v for k, v in state_dict.items()
@@ -110,7 +99,6 @@ def compute_sigma_batch(
     with torch.no_grad():
         for fn in active_fns:
             try:
-                # Use schema to get param names, same approach as antgpt._get_rewards
                 param_names = [arg.name for arg in fn.schema.arguments]
                 args = []
                 missing = []
@@ -131,7 +119,7 @@ def compute_sigma_batch(
         n = joint_pos.shape[0]
         return np.zeros(n), np.zeros(n)
 
-    stacked = np.stack(rewards, axis=0)  # [num_fns, N]
+    stacked = np.stack(rewards, axis=0)
     return stacked.std(axis=0), stacked.mean(axis=0)
 
 

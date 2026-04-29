@@ -260,6 +260,7 @@ class AntEnv(DirectRLEnv):
         self._gt_reward_buf = torch.zeros(self.num_envs, device=self.device)
 
         # Trajectory ring buffer (same pattern as cartpole)
+        # env_idx -> ([jp_t0, ...], [jv_t0, ...], [root_pos_t0, ...])
         self._traj_buf: dict = {}
         self._traj_queue: deque = deque()
 
@@ -542,11 +543,13 @@ class AntEnv(DirectRLEnv):
     def _accumulate_trajectory(self) -> None:
         jp = self.joint_pos.detach().cpu()
         jv = self.joint_vel.detach().cpu()
+        root_pos = self.ant.data.root_state_w[:, :3].detach().cpu()  # xyz only
         for env_idx in range(self.num_envs):
             if env_idx not in self._traj_buf:
-                self._traj_buf[env_idx] = ([], [])
+                self._traj_buf[env_idx] = ([], [], [])
             self._traj_buf[env_idx][0].append(jp[env_idx].clone())
             self._traj_buf[env_idx][1].append(jv[env_idx].clone())
+            self._traj_buf[env_idx][2].append(root_pos[env_idx].clone())
 
     def _save_terminal_states(self, done_mask: torch.Tensor) -> None:
         import os
@@ -554,11 +557,9 @@ class AntEnv(DirectRLEnv):
         path = os.path.join(self.cfg.states_dir, f"terminal_{self._tb_step}.pt")
         torch.save(
             {
-                # joint state (kept for backward compat)
                 "joint_pos": self.joint_pos[done_mask].cpu(),
                 "joint_vel": self.joint_vel[done_mask].cpu(),
                 "gt_reward": self._gt_reward_buf[done_mask].cpu(),
-                # all named obs tensors so sigma.py can call any ant reward fn
                 "torso_height": self.torso_height[done_mask].cpu(),
                 "vel_loc": self.vel_loc[done_mask].cpu(),
                 "angvel_loc": self.angvel_loc[done_mask].cpu(),
@@ -584,6 +585,7 @@ class AntEnv(DirectRLEnv):
             return
         jp_seq = torch.stack(buf[0], dim=0)
         jv_seq = torch.stack(buf[1], dim=0)
+        root_pos_seq = torch.stack(buf[2], dim=0)  # [T, 3]
         step = self._tb_step
         fname = f"traj_{step}_{env_idx}.pt"
         os.makedirs(self.cfg.trajectories_dir, exist_ok=True)
@@ -592,7 +594,9 @@ class AntEnv(DirectRLEnv):
             {
                 "joint_pos_seq": jp_seq,
                 "joint_vel_seq": jv_seq,
+                "root_pos_seq": root_pos_seq,   # <-- new
                 "episode_length": int(jp_seq.shape[0]),
+                "env_name": "ant",
             },
             fpath,
         )

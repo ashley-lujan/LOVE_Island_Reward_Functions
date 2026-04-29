@@ -260,6 +260,7 @@ class AntEnv(DirectRLEnv):
         self._gt_reward_buf = torch.zeros(self.num_envs, device=self.device)
 
         # Trajectory ring buffer (same pattern as cartpole)
+        # env_idx -> ([jp_t0, ...], [jv_t0, ...], [root_pos_t0, ...])
         self._traj_buf: dict = {}
         self._traj_queue: deque = deque()
 
@@ -542,11 +543,13 @@ class AntEnv(DirectRLEnv):
     def _accumulate_trajectory(self) -> None:
         jp = self.joint_pos.detach().cpu()
         jv = self.joint_vel.detach().cpu()
+        root_pos = self.ant.data.root_state_w[:, :3].detach().cpu()  # xyz only
         for env_idx in range(self.num_envs):
             if env_idx not in self._traj_buf:
-                self._traj_buf[env_idx] = ([], [])
+                self._traj_buf[env_idx] = ([], [], [])
             self._traj_buf[env_idx][0].append(jp[env_idx].clone())
             self._traj_buf[env_idx][1].append(jv[env_idx].clone())
+            self._traj_buf[env_idx][2].append(root_pos[env_idx].clone())
 
     def _save_terminal_states(self, done_mask: torch.Tensor) -> None:
         import os
@@ -554,11 +557,9 @@ class AntEnv(DirectRLEnv):
         path = os.path.join(self.cfg.states_dir, f"terminal_{self._tb_step}.pt")
         torch.save(
             {
-                # joint state (kept for backward compat)
                 "joint_pos": self.joint_pos[done_mask].cpu(),
                 "joint_vel": self.joint_vel[done_mask].cpu(),
                 "gt_reward": self._gt_reward_buf[done_mask].cpu(),
-                # all named obs tensors so sigma.py can call any ant reward fn
                 "torso_height": self.torso_height[done_mask].cpu(),
                 "vel_loc": self.vel_loc[done_mask].cpu(),
                 "angvel_loc": self.angvel_loc[done_mask].cpu(),
@@ -584,6 +585,7 @@ class AntEnv(DirectRLEnv):
             return
         jp_seq = torch.stack(buf[0], dim=0)
         jv_seq = torch.stack(buf[1], dim=0)
+        root_pos_seq = torch.stack(buf[2], dim=0)  # [T, 3]
         step = self._tb_step
         fname = f"traj_{step}_{env_idx}.pt"
         os.makedirs(self.cfg.trajectories_dir, exist_ok=True)
@@ -592,7 +594,9 @@ class AntEnv(DirectRLEnv):
             {
                 "joint_pos_seq": jp_seq,
                 "joint_vel_seq": jv_seq,
+                "root_pos_seq": root_pos_seq,   # <-- new
                 "episode_length": int(jp_seq.shape[0]),
+                "env_name": "ant",
             },
             fpath,
         )
@@ -703,70 +707,147 @@ import torch
 def compute_reward(
     vel_loc: torch.Tensor,
     angvel_loc: torch.Tensor,
+    yaw: torch.Tensor,
+    roll: torch.Tensor,
+    pitch: torch.Tensor,
+    angle_to_target: torch.Tensor,
     up_proj: torch.Tensor,
     heading_proj: torch.Tensor,
+    dof_pos_scaled: torch.Tensor,
     joint_vel: torch.Tensor,
     actions: torch.Tensor,
     contact_forces_feet: torch.Tensor,
     potentials: torch.Tensor,
     prev_potentials: torch.Tensor,
 ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-    # Forward velocity in the ant's local frame
+
+    # ------------------------------------------------------------
+    # Analysis of prior reward components / policy feedback
+    # ------------------------------------------------------------
+    # task_score stayed near zero on average (Mean 0.03, many zeros),
+    # which indicates the previous shaping was not giving a sufficiently
+    # learnable signal for fast locomotion.
+    #
+    # Existing components:
+    # 1) forward_vel / forward_speed_reward:
+    #    Likely too saturated or not directly aligned with the optimization
+    #    pressure needed. We keep a forward-motion term but rewrite it to
+    #    be smoother and easier to optimize.
+    #
+    # 2) progress:
+    #    Helpful but usually small/noisy; keep it as a minor shaping term.
+    #
+    # 3) upright_reward:
+    #    Useful, but if too weak it won't prevent collapse; if too strong it
+    #    can dominate. Keep as a soft survival gate.
+    #
+    # 4) angvel_penalty / action_penalty / contact_penalty:
+    #    These regularizers are good, but if too strong they suppress
+    #    exploration and locomotion. Rescale them down.
+    #
+    # 5) heading-related terms were not essential for "run forward as fast
+    #    as possible" and can distract optimization. We avoid heavy reliance
+    #    on them and instead use angle_to_target/heading_proj only as weak
+    #    stabilizers.
+
+    # ------------------------------------------------------------
+    # Core locomotion terms
+    # ------------------------------------------------------------
     forward_vel = vel_loc[:, 0]
+    lateral_vel = vel_loc[:, 1]
+    vertical_vel = vel_loc[:, 2]
 
-    # Progress toward target direction (Isaac Lab potential-based term)
-    progress_reward = potentials - prev_potentials
+    # Dense progress toward the target direction
+    progress = potentials - prev_potentials
 
-    # Encourage the body to face and stay aligned with the target direction
-    heading_reward = torch.clamp(heading_proj, 0.0, 1.0)
+    # Orientation / stability
+    upright = torch.clamp(up_proj, 0.0, 1.0)
+    heading = torch.clamp(heading_proj, -1.0, 1.0)
+    angle_term = torch.cos(angle_to_target)
 
-    # Stay upright
-    upright_reward = torch.clamp(up_proj, 0.0, 1.0)
+    # Motion / smoothness penalties
+    angvel_mag_sq = torch.sum(angvel_loc * angvel_loc, dim=1)
+    joint_vel_mag_sq = torch.sum(joint_vel * joint_vel, dim=1)
+    action_mag_sq = torch.sum(actions * actions, dim=1)
 
-    # Penalize excessive turning / wobbling
-    ang_vel_penalty = torch.sum(angvel_loc * angvel_loc, dim=-1)
+    # Joint posture regularization: keep joints in a reasonable range
+    pose_mag_sq = torch.sum(dof_pos_scaled * dof_pos_scaled, dim=1)
 
-    # Penalize overly large actions for smoother locomotion
-    action_penalty = torch.sum(actions * actions, dim=-1)
+    # Foot contact forces
+    foot_contact_force = torch.norm(contact_forces_feet, dim=2)
+    contact_force_sum = torch.sum(foot_contact_force, dim=1)
 
-    # Penalize large joint velocities to reduce flailing
-    joint_vel_penalty = torch.sum(joint_vel * joint_vel, dim=-1)
+    # ------------------------------------------------------------
+    # Bounded shaping with explicit temperatures
+    # ------------------------------------------------------------
+    forward_temp = 0.75
+    progress_temp = 1.5
+    upright_temp = 0.25
+    heading_temp = 0.5
+    angle_temp = 1.0
 
-    # Light foot contact penalty to discourage dragging/slapping
-    foot_force_mag = torch.norm(contact_forces_feet, dim=-1)  # (num_envs, 4)
-    contact_penalty = torch.sum(torch.clamp(foot_force_mag - 1.0, min=0.0), dim=-1)
+    # Strongly reward positive forward velocity, but keep it smooth/bounded.
+    # The subtraction of 1.0 makes zero velocity close to zero reward.
+    forward_reward = torch.exp(torch.clamp(forward_vel, min=-5.0, max=8.0) / forward_temp) - 1.0
 
-    # Reward shaping terms
-    speed_temp = 2.0
-    progress_temp = 1.0
-    heading_temp = 1.0
-    upright_temp = 1.0
+    # Small bonus for actual target progress
+    progress_reward = torch.tanh(progress / progress_temp)
 
-    forward_speed_reward = torch.exp(forward_vel / speed_temp)
-    progress_reward_shaped = torch.exp(progress_reward / progress_temp)
-    heading_reward_shaped = torch.exp(heading_reward / heading_temp)
-    upright_reward_shaped = torch.exp(upright_reward / upright_temp)
+    # Survival-like term to keep the ant upright
+    upright_reward = torch.exp((upright - 1.0) / upright_temp)
 
+    # Weak heading/target alignment stabilization
+    heading_reward = torch.exp((heading - 1.0) / heading_temp) - 1.0
+    angle_reward = torch.exp(torch.clamp(angle_term, min=-1.0, max=1.0) / angle_temp) - 1.0
+
+    # ------------------------------------------------------------
+    # Regularization terms (kept intentionally small)
+    # ------------------------------------------------------------
+    angvel_penalty = angvel_mag_sq
+    joint_vel_penalty = joint_vel_mag_sq
+    action_penalty = action_mag_sq
+    pose_penalty = pose_mag_sq
+    contact_penalty = contact_force_sum
+    sideways_vel_penalty = lateral_vel * lateral_vel
+    vertical_vel_penalty = vertical_vel * vertical_vel
+
+    # ------------------------------------------------------------
+    # Total reward
+    # ------------------------------------------------------------
     reward = (
-        1.5 * forward_speed_reward
-        + 1.0 * progress_reward_shaped
-        + 0.5 * heading_reward_shaped
-        + 0.5 * upright_reward_shaped
-        - 0.01 * ang_vel_penalty
-        - 0.001 * action_penalty
-        - 0.0005 * joint_vel_penalty
-        - 0.0001 * contact_penalty
+        2.5 * forward_reward
+        + 0.5 * progress_reward
+        + 0.75 * upright_reward
+        + 0.10 * heading_reward
+        + 0.05 * angle_reward
+        - 0.01 * angvel_penalty
+        - 0.002 * joint_vel_penalty
+        - 0.004 * action_penalty
+        - 0.001 * pose_penalty
+        - 0.0005 * contact_penalty
+        - 0.02 * sideways_vel_penalty
+        - 0.01 * vertical_vel_penalty
     )
 
-    reward_dict: Dict[str, torch.Tensor] = {
-        "forward_speed_reward": forward_speed_reward,
-        "progress_reward_shaped": progress_reward_shaped,
-        "heading_reward_shaped": heading_reward_shaped,
-        "upright_reward_shaped": upright_reward_shaped,
-        "ang_vel_penalty": ang_vel_penalty,
-        "action_penalty": action_penalty,
+    reward_components: Dict[str, torch.Tensor] = {
+        "forward_vel": forward_vel,
+        "progress": progress,
+        "upright": upright,
+        "heading": heading,
+        "angle_to_target": angle_to_target,
+        "forward_reward": forward_reward,
+        "progress_reward": progress_reward,
+        "upright_reward": upright_reward,
+        "heading_reward": heading_reward,
+        "angle_reward": angle_reward,
+        "angvel_penalty": angvel_penalty,
         "joint_vel_penalty": joint_vel_penalty,
+        "action_penalty": action_penalty,
+        "pose_penalty": pose_penalty,
         "contact_penalty": contact_penalty,
+        "sideways_vel_penalty": sideways_vel_penalty,
+        "vertical_vel_penalty": vertical_vel_penalty,
         "total_reward": reward,
     }
-    return reward, reward_dict
+
+    return reward, reward_components
