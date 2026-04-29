@@ -367,49 +367,67 @@ from typing import Tuple, Dict
 import torch
 @torch.jit.script
 def compute_reward(joint_pos: torch.Tensor, joint_vel: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-    # joint_pos[:, 0] = cart position, joint_pos[:, 1] = pole angle
-    # joint_vel[:, 0] = cart velocity, joint_vel[:, 1] = pole angular velocity
-
+    # Observations
     cart_pos = joint_pos[:, 0]
     pole_angle = joint_pos[:, 1]
     cart_vel = joint_vel[:, 0]
     pole_ang_vel = joint_vel[:, 1]
 
-    # Sharper temperatures to make the agent care strongly about upright balance
-    angle_temp = 0.15
-    ang_vel_temp = 0.5
-    cart_pos_temp = 2.0
-    cart_vel_temp = 2.0
+    # Temperatures / scales
+    angle_temp = 0.015
+    angle_upright_temp = 0.005
+    cart_pos_temp = 1.0
+    cart_vel_temp = 0.25
+    pole_vel_temp = 0.10
 
-    # Main objective: keep the pole upright
-    angle_error = pole_angle * pole_angle
-    angle_reward = torch.exp(-angle_error / angle_temp)
+    # Squares
+    angle_sq = pole_angle * pole_angle
+    cart_pos_sq = cart_pos * cart_pos
+    cart_vel_sq = cart_vel * cart_vel
+    pole_vel_sq = pole_ang_vel * pole_ang_vel
 
-    # Stabilize pole motion to reduce oscillation
-    ang_vel_error = pole_ang_vel * pole_ang_vel
-    ang_vel_reward = torch.exp(-ang_vel_error / ang_vel_temp)
+    # Component analysis and redesign:
+    # - The previous task_score is already saturated at the maximum for many runs,
+    #   which indicates the policy can solve the task but the reward likely lacks
+    #   enough discrimination to improve robustness.
+    # - Angle-related terms are the most important; keep them, but make them sharper.
+    # - Cart position and velocity should be mild regularizers, not primary drivers.
+    # - Pole angular velocity should be penalized more clearly to stabilize balancing.
 
-    # Weak regularization to prevent cart drifting too far
-    cart_pos_error = cart_pos * cart_pos
-    cart_pos_reward = torch.exp(-cart_pos_error / cart_pos_temp)
+    # Main uprightness reward: sharply peaks near zero angle
+    upright_reward = torch.exp(-angle_sq / angle_temp)
 
-    # Weak regularization on cart speed
-    cart_vel_error = cart_vel * cart_vel
-    cart_vel_reward = torch.exp(-cart_vel_error / cart_vel_temp)
+    # Extra bonus for being extremely close to upright; this provides a stronger signal
+    # when the policy already balances but needs refinement.
+    very_upright_reward = torch.exp(-angle_sq / angle_upright_temp)
 
-    # Strongly prioritize uprightness
-    reward = (
-        3.0 * angle_reward +
-        0.75 * ang_vel_reward +
-        0.10 * cart_pos_reward +
-        0.10 * cart_vel_reward
+    # Keep cart near the center as a secondary objective
+    cart_center_reward = torch.exp(-cart_pos_sq / cart_pos_temp)
+
+    # Suppress excessive cart motion
+    cart_still_reward = torch.exp(-cart_vel_sq / cart_vel_temp)
+
+    # Suppress pole angular motion to improve stability
+    pole_still_reward = torch.exp(-pole_vel_sq / pole_vel_temp)
+
+    # Slight penalty for large angle velocity when far from upright is already captured
+    # by pole_still_reward; no need for a redundant term.
+
+    # Weighted sum: prioritize pole balance strongly
+    total_reward = (
+        0.58 * upright_reward +
+        0.20 * very_upright_reward +
+        0.08 * cart_center_reward +
+        0.07 * cart_still_reward +
+        0.07 * pole_still_reward
     )
 
     reward_components: Dict[str, torch.Tensor] = {
-        "angle_reward": angle_reward,
-        "ang_vel_reward": ang_vel_reward,
-        "cart_pos_reward": cart_pos_reward,
-        "cart_vel_reward": cart_vel_reward,
+        "upright_reward": upright_reward,
+        "very_upright_reward": very_upright_reward,
+        "cart_center_reward": cart_center_reward,
+        "cart_still_reward": cart_still_reward,
+        "pole_still_reward": pole_still_reward,
+        "total_reward": total_reward,
     }
-
-    return reward, reward_components
+    return total_reward, reward_components

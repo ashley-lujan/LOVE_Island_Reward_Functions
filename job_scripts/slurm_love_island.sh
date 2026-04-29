@@ -12,13 +12,13 @@
 #SBATCH -e logs/love-island-%j.err
 
 # ── Environment
-source /uufs/chpc.utah.edu/common/home/u1427573/software/pkg/miniforge3/etc/profile.d/conda.sh
+source $(conda info --base)/etc/profile.d/conda.sh
 conda activate eureka
 
 # ── Paths
-REPO=/uufs/chpc.utah.edu/common/home/u1427573/LOVE_Island_Reward_Functions
+REPO=/uufs/chpc.utah.edu/common/home/${USER}/AdvAI/LOVE_Island_Reward_Functions
 SCRATCH=/scratch/general/vast/${USER}/love_island
-CONTAINER_DIR=/scratch/general/vast/${USER}/containers
+CONTAINER_DIR=/scratch/general/vast/u1427573/containers
 
 mkdir -p "${SCRATCH}" "${SCRATCH}/runs" "${REPO}/logs" \
          "${SCRATCH}/gifs" "${SCRATCH}/isaac-sim-cache" "${SCRATCH}/isaac-sim-data"
@@ -46,17 +46,17 @@ cd "${REPO}/eureka"
 module load apptainer/1.4.1
 
 python love_island.py \
-    env=cartpole \
+    env=ant \
     backend=isaaclab \
     love_island.enabled=true \
     \
-    num_islands=2 \
+    num_islands=4 \
     sample=1 \
     iteration=5 \
     max_iterations=200 \
     \
     feedback_mode=multi \
-    human_feedback_enabled=true \
+    human_feedback_enabled=false \
     human_feedback_timeout=30 \
     feedback_scratch_path="${SCRATCH}" \
     runs_dir="${SCRATCH}/runs" \

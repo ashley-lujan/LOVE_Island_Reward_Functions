@@ -576,6 +576,7 @@ def main(cfg):
         should_query, feedback_type, pattern = monitor.evaluate_mini_iteration()
 
         if not should_query:
+            logging.info(f"LOVE Island: QUERY AVOIDED")
             eval_buffer.reset_for_new_mini_iteration(mini_iteration)
             _save_summary(cfg, mini_iteration, max_successes, execute_rates, best_code_paths, best_checkpoint_paths)
             continue

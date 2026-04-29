@@ -45,66 +45,84 @@ def load_reward_fn(py_path: str) -> Optional[Callable]:
 
 
 def load_terminal_states(states_dir: str) -> Optional[Dict[str, torch.Tensor]]:
-    """Load and concatenate all terminal_{step}.pt files from a run's states/ dir.
-
-    Returns dict with keys joint_pos, joint_vel, gt_reward (all CPU tensors),
-    or None if no state files exist.
-    """
     pattern = os.path.join(states_dir, "terminal_*.pt")
     files = sorted(glob(pattern))
     if not files:
         logging.info(f"[sigma] no terminal state files in {states_dir}")
         return None
 
-    joint_pos_parts: List[torch.Tensor] = []
-    joint_vel_parts: List[torch.Tensor] = []
-    gt_reward_parts: List[torch.Tensor] = []
+    parts: Dict[str, List[torch.Tensor]] = {}
 
     for f in files:
         try:
             data = torch.load(f, map_location="cpu", weights_only=True)
-            joint_pos_parts.append(data["joint_pos"])
-            joint_vel_parts.append(data["joint_vel"])
-            gt_reward_parts.append(data["gt_reward"])
+            for key, tensor in data.items():
+                parts.setdefault(key, []).append(tensor)
         except Exception as e:
             logging.warning(f"[sigma] skipping {f}: {e}")
 
-    if not joint_pos_parts:
+    if not parts:
         return None
 
-    return {
-        "joint_pos": torch.cat(joint_pos_parts, dim=0),
-        "joint_vel": torch.cat(joint_vel_parts, dim=0),
-        "gt_reward": torch.cat(gt_reward_parts, dim=0),
-    }
+    # Validate consistent shapes before concatenating — mismatched dims means
+    # files from different envs (e.g. stale cartpole mixed with ant). Drop bad files.
+    result = {}
+    for key, tensors in parts.items():
+        if len(tensors) == 0:
+            continue
+        ref_shape = tensors[0].shape[1:]  # everything after batch dim must match
+        valid = [t for t in tensors if t.shape[1:] == ref_shape]
+        if len(valid) < len(tensors):
+            logging.warning(
+                f"[sigma] key '{key}': dropped {len(tensors)-len(valid)} files "
+                f"with mismatched shape (expected {ref_shape})"
+            )
+        if valid:
+            result[key] = torch.cat(valid, dim=0)
+
+    return result if result else None
 
 
 def compute_sigma_batch(
     reward_fns: List[Callable],
     joint_pos: torch.Tensor,
     joint_vel: torch.Tensor,
-) -> np.ndarray:
-    """Compute per-state σ = std of R_i(s) across all reward functions.
+    state_dict: Optional[Dict[str, torch.Tensor]] = None,
+) -> tuple:
+    """Compute per-state σ across reward functions.
 
-    Args:
-        reward_fns: list of compute_reward callables (None entries are skipped)
-        joint_pos:  Tensor[N, J]
-        joint_vel:  Tensor[N, J]
-
-    Returns:
-        sigma: ndarray[N] — std of ensemble rewards per state
-        mean_rewards: ndarray[N] — mean of ensemble rewards per state
+    Uses schema-based dispatch: reads each fn's argument names from its
+    torch.jit schema and looks them up in state_dict. Falls back to
+    (joint_pos, joint_vel) for cartpole-style fns that only need those two.
     """
     active_fns = [fn for fn in reward_fns if fn is not None]
     if not active_fns:
         n = joint_pos.shape[0]
         return np.zeros(n), np.zeros(n)
 
+    # Build a lookup table from all available tensors
+    available = {"joint_pos": joint_pos, "joint_vel": joint_vel}
+    if state_dict:
+        available.update({k: v for k, v in state_dict.items()
+                          if isinstance(v, torch.Tensor)})
+
     rewards = []
     with torch.no_grad():
         for fn in active_fns:
             try:
-                r, _ = fn(joint_pos, joint_vel)
+                # Use schema to get param names, same approach as antgpt._get_rewards
+                param_names = [arg.name for arg in fn.schema.arguments]
+                args = []
+                missing = []
+                for p in param_names:
+                    if p in available:
+                        args.append(available[p])
+                    else:
+                        missing.append(p)
+                if missing:
+                    logging.warning(f"[sigma] skipping fn — missing tensors: {missing}")
+                    continue
+                r, _ = fn(*args)
                 rewards.append(r.cpu().numpy())
             except Exception as e:
                 logging.warning(f"[sigma] reward fn call failed: {e}")
@@ -114,9 +132,7 @@ def compute_sigma_batch(
         return np.zeros(n), np.zeros(n)
 
     stacked = np.stack(rewards, axis=0)  # [num_fns, N]
-    sigma = stacked.std(axis=0)          # [N]
-    mean_r = stacked.mean(axis=0)        # [N]
-    return sigma, mean_r
+    return stacked.std(axis=0), stacked.mean(axis=0)
 
 
 def tb_sigma_prefilter(

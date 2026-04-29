@@ -141,8 +141,23 @@ def main():
 
     # Cartpole always uses CartpoleEnv / CartpoleEnvCfg.
     # For additional envs, extend this mapping.
-    env_cls = task_module.CartpoleEnv
-    env_cfg_cls = task_module.CartpoleEnvCfg
+    # Dynamically resolve the env class from the loaded module.
+    # Convention: task file exports exactly one DirectRLEnv subclass (e.g. AntEnv)
+    # and a matching cfg class (e.g. AntEnvCfg).
+    import inspect
+    from isaaclab.envs import DirectRLEnv
+
+    env_classes = [
+        obj for _, obj in inspect.getmembers(task_module, inspect.isclass)
+        if issubclass(obj, DirectRLEnv) and obj is not DirectRLEnv
+    ]
+    if len(env_classes) != 1:
+        raise ValueError(
+            f"Expected exactly one DirectRLEnv subclass in {args.task}, "
+            f"found: {[c.__name__ for c in env_classes]}"
+        )
+    env_cls = env_classes[0]
+    env_cfg_cls = getattr(task_module, env_cls.__name__ + "Cfg")
 
     env_cfg = env_cfg_cls()
     env_cfg.scene.num_envs = args.num_envs

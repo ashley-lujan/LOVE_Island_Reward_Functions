@@ -59,25 +59,32 @@ class DisagreementMonitor:
                 return {"mean_sigma": 0.0, "mean_reward": 0.0, "n_states": 0, "skipped": True}
 
         # Load all terminal states across all island runs
-        all_joint_pos = []
-        all_joint_vel = []
+        # Load all terminal states across all island runs
+        all_states: List[Dict] = []
         for states_dir in states_dirs:
             if not states_dir:
                 continue
             states = load_terminal_states(states_dir)
             if states is not None:
-                all_joint_pos.append(states["joint_pos"])
-                all_joint_vel.append(states["joint_vel"])
+                all_states.append(states)
 
-        if not all_joint_pos:
+        if not all_states:
             logging.info(f"[monitor] iter {self._mini_iteration}: no terminal states found")
             self.eval_buffer.reset_for_new_mini_iteration(self._mini_iteration)
             self._record_sigma(0.0, 0.0)
             return {"mean_sigma": 0.0, "mean_reward": 0.0, "n_states": 0, "skipped": False}
 
         import torch
-        joint_pos = torch.cat(all_joint_pos, dim=0)
-        joint_vel = torch.cat(all_joint_vel, dim=0)
+
+        # Merge all state dicts — cat each key across runs
+        merged: Dict[str, list] = {}
+        for s in all_states:
+            for k, v in s.items():
+                merged.setdefault(k, []).append(v)
+        full_state_dict = {k: torch.cat(v, dim=0) for k, v in merged.items()}
+
+        joint_pos = full_state_dict["joint_pos"]
+        joint_vel = full_state_dict["joint_vel"]
 
         # Load reward functions
         reward_fns = [load_reward_fn(p) for p in reward_fn_paths]
@@ -87,7 +94,8 @@ class DisagreementMonitor:
         if active < 2:
             logging.warning("[monitor] fewer than 2 reward fns — σ will be 0")
 
-        sigmas, mean_rewards = compute_sigma_batch(reward_fns, joint_pos, joint_vel)
+        sigmas, mean_rewards = compute_sigma_batch(reward_fns, joint_pos, joint_vel,
+                                                    state_dict=full_state_dict)
 
         mean_sigma = float(sigmas.mean())
         mean_reward = float(mean_rewards.mean())
@@ -95,7 +103,7 @@ class DisagreementMonitor:
 
         # Build episode records and populate buffer
         records = make_episode_records(
-            {"joint_pos": joint_pos, "joint_vel": joint_vel},
+            full_state_dict,   # was {"joint_pos": joint_pos, "joint_vel": joint_vel}
             sigmas,
             self._mini_iteration,
         )
