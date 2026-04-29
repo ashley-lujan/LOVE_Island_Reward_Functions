@@ -367,49 +367,61 @@ from typing import Tuple, Dict
 import torch
 @torch.jit.script
 def compute_reward(joint_pos: torch.Tensor, joint_vel: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-    # joint_pos[:, 0] = cart position, joint_pos[:, 1] = pole angle
-    # joint_vel[:, 0] = cart velocity, joint_vel[:, 1] = pole angular velocity
+    """
+    Reward analysis of previous design:
+    - task_score showed perfect max but low mean, indicating the policy can occasionally succeed
+      but is not consistently learning a stable, smooth balancing strategy.
+    - The prior reward used mostly mild exponentials with small regularizers. For Cartpole, the
+      dominant signal should be the pole angle, with velocity damping to prevent oscillation.
+    - Cart centering should be kept as a weak auxiliary term only.
+
+    New design:
+    - Stronger upright term with a tighter temperature so angle differences matter more.
+    - Explicit velocity stabilization for pole angular velocity.
+    - Small cart position and cart velocity penalties as weak regularizers.
+    - Add a binary-like success shaping term to reinforce near-upright states.
+    """
 
     cart_pos = joint_pos[:, 0]
     pole_angle = joint_pos[:, 1]
     cart_vel = joint_vel[:, 0]
     pole_ang_vel = joint_vel[:, 1]
 
-    # Sharper temperatures to make the agent care strongly about upright balance
-    angle_temp = 0.15
-    ang_vel_temp = 0.5
-    cart_pos_temp = 2.0
-    cart_vel_temp = 2.0
+    # Temperatures for shaping
+    angle_temp = 0.04
+    ang_vel_temp = 0.10
+    cart_pos_temp = 2.00
+    cart_vel_temp = 2.00
+    success_angle_temp = 0.02
 
-    # Main objective: keep the pole upright
-    angle_error = pole_angle * pole_angle
-    angle_reward = torch.exp(-angle_error / angle_temp)
+    # Main balance term
+    upright_reward = torch.exp(-(pole_angle * pole_angle) / angle_temp)
 
-    # Stabilize pole motion to reduce oscillation
-    ang_vel_error = pole_ang_vel * pole_ang_vel
-    ang_vel_reward = torch.exp(-ang_vel_error / ang_vel_temp)
+    # Damping term to reduce pole oscillation
+    angular_stability_reward = torch.exp(-(pole_ang_vel * pole_ang_vel) / ang_vel_temp)
 
-    # Weak regularization to prevent cart drifting too far
-    cart_pos_error = cart_pos * cart_pos
-    cart_pos_reward = torch.exp(-cart_pos_error / cart_pos_temp)
+    # Auxiliary regularizers
+    cart_centering_reward = torch.exp(-(cart_pos * cart_pos) / cart_pos_temp)
+    cart_smoothness_reward = torch.exp(-(cart_vel * cart_vel) / cart_vel_temp)
 
-    # Weak regularization on cart speed
-    cart_vel_error = cart_vel * cart_vel
-    cart_vel_reward = torch.exp(-cart_vel_error / cart_vel_temp)
+    # Extra reinforcement when the pole is very close to upright
+    success_bonus = torch.exp(-(pole_angle * pole_angle) / success_angle_temp)
 
-    # Strongly prioritize uprightness
+    # Weighted sum with balance as the dominant objective
     reward = (
-        3.0 * angle_reward +
-        0.75 * ang_vel_reward +
-        0.10 * cart_pos_reward +
-        0.10 * cart_vel_reward
+        0.52 * upright_reward +
+        0.20 * angular_stability_reward +
+        0.10 * success_bonus +
+        0.10 * cart_centering_reward +
+        0.08 * cart_smoothness_reward
     )
 
     reward_components: Dict[str, torch.Tensor] = {
-        "angle_reward": angle_reward,
-        "ang_vel_reward": ang_vel_reward,
-        "cart_pos_reward": cart_pos_reward,
-        "cart_vel_reward": cart_vel_reward,
+        "upright_reward": upright_reward,
+        "angular_stability_reward": angular_stability_reward,
+        "success_bonus": success_bonus,
+        "cart_centering_reward": cart_centering_reward,
+        "cart_smoothness_reward": cart_smoothness_reward,
     }
 
     return reward, reward_components

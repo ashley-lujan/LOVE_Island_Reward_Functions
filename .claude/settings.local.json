@@ -25,7 +25,9 @@
       "Read(//scratch/general/vast/u1427573/love_island/outputs/**)",
       "Bash(grep *)",
       "Bash(squeue *)",
-      "Bash(xargs cat *)"
+      "Bash(xargs cat *)",
+      "Read(//scratch/general/vast/u1427573/containers/**)",
+      "Read(//scratch/general/vast/u1427573/**)"
     ]
   }
 }

@@ -41,18 +41,21 @@ echo "Submit cmd   : python submit_feedback.py --scratch ${SCRATCH} --iter <N> -
 echo "SLURM log    : logs/love-island-${SLURM_JOB_ID}.out"
 
 # ── Launch
+# ENV can be overridden: sbatch job_scripts/slurm_love_island.sh ENV=ant
+ENV=${ENV:-cartpole}
+
 cd "${REPO}/eureka"
 
 module load apptainer/1.4.1
 
 python love_island.py \
-    env=cartpole \
+    env=${ENV} \
     backend=isaaclab \
     love_island.enabled=true \
     \
-    num_islands=2 \
+    num_islands=5 \
     sample=1 \
-    iteration=5 \
+    iteration=10 \
     max_iterations=200 \
     \
     feedback_mode=multi \

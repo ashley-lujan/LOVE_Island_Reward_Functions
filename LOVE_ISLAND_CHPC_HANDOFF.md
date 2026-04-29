@@ -48,16 +48,32 @@ pip install matplotlib pillow torch tensorboard hydra-core omegaconf
 
 ---
 
-## 3. Pull the Isaac Lab container
+## 3. Isaac Lab container — use Norm's copy (no pull needed)
 
-The training loop runs inside a Singularity/Apptainer container. Pull it once to your scratch space:
+The training loop runs inside a Singularity/Apptainer container. Norm's copy is world-readable,
+so **you don't need to pull your own**:
 
+```
+/scratch/general/vast/u1427573/containers/isaac-lab-2.3.2.sif
+```
+
+Tell the SLURM script to use it by adding one line after the `CONTAINER_DIR=` line:
+
+```bash
+# In job_scripts/slurm_love_island.sh, replace:
+CONTAINER_DIR=/scratch/general/vast/${USER}/containers
+
+# With:
+CONTAINER_DIR=/scratch/general/vast/u1427573/containers
+```
+
+That's it — `ISAACLAB_CONTAINER` is derived from `CONTAINER_DIR`, so it will resolve to Norm's file automatically.
+
+If you ever want your own copy (e.g., to use a different version), run:
 ```bash
 bash job_scripts/pull_isaac_sim.sh
 ```
-
-This saves the container to `/scratch/general/vast/${USER}/containers/isaac-lab-2.3.2.sif`.
-The SLURM script expects it there — no changes needed since it uses `$USER`.
+and revert the `CONTAINER_DIR` line back to `${USER}`.
 
 ---
 
